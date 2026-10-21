@@ -1,0 +1,37 @@
+[workspace]
+resolver = "3"
+members = ["crates/patronus-core", "crates/patronus-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+authors = ["Patronus"]
+
+[workspace.dependencies]
+patronus-core = { path = "crates/patronus-core" }
+
+# UI — rendu glow uniquement, comme Fawkes et DragonTree.
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "clipboard"] }
+egui = "0.37"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+dirs = "7"
+globset = "0.4"
+notify = "8"
+notify-debouncer-mini = "0.7"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true

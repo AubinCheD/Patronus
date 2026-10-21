@@ -1,2 +1,6 @@
-/target
-*.local.md
+/target/
+/.cargo/config.toml
+/.claude/settings.local.json
+/.superpowers/
+*.png
+/tools/*.exe
