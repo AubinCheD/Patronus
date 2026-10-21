@@ -64,6 +64,29 @@ pub struct Cost {
     pub estime: bool,
 }
 
+/// Un processus : numéro et heure de création (un numéro seul peut être redonné à un autre).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Owner {
+    pub pid: u32,
+    pub cree: u64,
+}
+
+impl Owner {
+    pub fn current() -> Owner {
+        let (pid, cree) = crate::winproc::current();
+        Owner { pid, cree }
+    }
+
+    pub fn is_alive(&self) -> bool {
+        crate::winproc::is_alive(self.pid, self.cree)
+    }
+
+    /// Un autre processus, encore vivant.
+    pub fn is_other_live_process(&self) -> bool {
+        *self != Owner::current() && self.is_alive()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Run {
     pub id: String,
@@ -92,6 +115,10 @@ pub struct Run {
     /// Session Claude de l'exécution, pour la reprendre.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_claude: Option<String>,
+    /// Processus qui mène l'exécution (fenêtre, ligne de commande ou Planificateur) : tant qu'il vit,
+    /// une exécution « en cours » n'est pas déclarée interrompue par un autre.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proprietaire: Option<Owner>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub liens: Vec<String>,
     #[serde(flatten)]
@@ -115,6 +142,7 @@ impl Run {
             archive: false,
             worktree: None,
             session_claude: None,
+            proprietaire: None,
             liens: Vec::new(),
             autres: BTreeMap::new(),
         }
@@ -179,7 +207,10 @@ impl RunStore {
                 .and_then(|t| serde_json::from_str::<Run>(&t).map_err(|e| e.to_string()))
             {
                 Ok(mut run) => {
-                    if run.statut == Status::EnCours {
+                    // Une exécution menée par un autre processus encore vivant continue : elle n'est pas
+                    // interrompue (la fenêtre et la ligne de commande partagent le dossier).
+                    let elsewhere = run.proprietaire.is_some_and(|o| o.is_other_live_process());
+                    if run.statut == Status::EnCours && !elsewhere {
                         run.statut = Status::Interrompue;
                         run.resume = "Patronus s'est arrêté pendant l'exécution.".into();
                         run.lu = false;
@@ -192,6 +223,22 @@ impl RunStore {
         }
         runs.sort_by(|a, b| b.debut.cmp(&a.debut).then_with(|| b.id.cmp(&a.id)));
         (runs, problems)
+    }
+
+    /// Relit une entrée.
+    pub fn load_one(&self, id: &str) -> Option<Run> {
+        let text = read_text(&self.run_dir(id).join("run.json")).ok()?;
+        serde_json::from_str(&text).ok()
+    }
+
+    /// Identifiants des entrées présentes sur le disque.
+    pub fn ids(&self) -> Vec<String> {
+        let Ok(entries) = fs::read_dir(&self.dir) else { return Vec::new() };
+        entries
+            .flatten()
+            .filter(|e| e.path().join("run.json").is_file())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect()
     }
 
     /// Supprime les entrées archivées ou lues plus anciennes que `days` jours. Les non lues restent.

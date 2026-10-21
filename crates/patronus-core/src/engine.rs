@@ -6,14 +6,15 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
 use crate::exec::{Context, Outcome, log, run_script};
 use crate::fsutil::{read_text, write_atomic};
-use crate::run::{Run, RunStore, Status};
+use crate::lock::TaskLock;
+use crate::run::{Owner, Run, RunStore, Status};
 use crate::schedule::{missed, next_due};
 use crate::task::{Loaded, Task, TaskStore, Trigger};
 use crate::watch::{Matcher, Watcher};
@@ -93,6 +94,34 @@ struct Window {
     end: Option<SystemTime>,
 }
 
+/// Comment ouvrir le moteur.
+#[derive(Clone)]
+pub struct Options {
+    /// Essais : une action exécutée à la place du script ou de la session.
+    pub executor: Option<Executor>,
+    /// Calme attendu avant de signaler des fichiers modifiés.
+    pub debounce: Duration,
+    /// Conservation des résultats lus ou archivés, en jours.
+    pub retention_days: u32,
+    /// Sans fenêtre (`patronus lancer`, Planificateur) : ni rétention, ni échéances manquées, ni
+    /// surveillance des fichiers ; le moteur ne fait que lancer ce qu'on lui demande.
+    pub headless: bool,
+    /// Relecture de la boîte (résultats écrits par un autre processus).
+    pub refresh_every: Duration,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options {
+            executor: None,
+            debounce: Duration::from_secs(2),
+            retention_days: 30,
+            headless: false,
+            refresh_every: Duration::from_secs(5),
+        }
+    }
+}
+
 pub struct Engine {
     data_dir: PathBuf,
     pub tasks: TaskStore,
@@ -123,6 +152,9 @@ pub struct Engine {
     executor: Option<Executor>,
     pub debounce: Duration,
     pub retention_days: u32,
+    headless: bool,
+    refresh_every: Duration,
+    last_refresh: Instant,
     /// Fermeture demandée : plus aucun départ.
     shutting_down: bool,
 }
@@ -130,10 +162,19 @@ pub struct Engine {
 impl Engine {
     /// Ouvre le dossier de données : tâches, boîte, échéances manquées depuis la dernière fois.
     pub fn open(data_dir: &Path, now: NaiveDateTime) -> Engine {
-        Self::open_with(data_dir, now, None, Duration::from_secs(2))
+        Self::open_opts(data_dir, now, Options::default())
+    }
+
+    /// Sans fenêtre : voir `Options::headless`.
+    pub fn open_headless(data_dir: &Path, now: NaiveDateTime) -> Engine {
+        Self::open_opts(data_dir, now, Options { headless: true, ..Options::default() })
     }
 
     pub fn open_with(data_dir: &Path, now: NaiveDateTime, executor: Option<Executor>, debounce: Duration) -> Engine {
+        Self::open_opts(data_dir, now, Options { executor, debounce, ..Options::default() })
+    }
+
+    pub fn open_opts(data_dir: &Path, now: NaiveDateTime, opts: Options) -> Engine {
         let (done_tx, done_rx) = channel();
         let (files_tx, files_rx) = channel();
         let store = RunStore::new(data_dir.join("executions"));
@@ -163,14 +204,19 @@ impl Engine {
             matchers: Vec::new(),
             planning,
             finished: Vec::new(),
-            executor,
-            debounce,
-            retention_days: 30,
+            executor: opts.executor,
+            debounce: opts.debounce,
+            retention_days: opts.retention_days,
+            headless: opts.headless,
+            refresh_every: opts.refresh_every,
+            last_refresh: Instant::now(),
             shutting_down: false,
         };
-        e.store.prune(&mut e.runs, e.retention_days, now);
         e.reload_tasks(now);
-        e.report_missed(now);
+        if !e.headless {
+            e.store.prune(&mut e.runs, e.retention_days, now);
+            e.report_missed(now);
+        }
         e
     }
 
@@ -199,7 +245,7 @@ impl Engine {
         }
         let dirs: BTreeSet<PathBuf> =
             self.matchers.iter().map(|(_, m)| m.dossier().to_path_buf()).filter(|d| d.is_dir()).collect();
-        if dirs != self.watched {
+        if dirs != self.watched && !self.headless {
             self.watcher = None;
             if !dirs.is_empty() {
                 match Watcher::start(&dirs, self.debounce, self.files_tx.clone()) {
@@ -262,28 +308,70 @@ impl Engine {
         self.runs.iter().find(|r| r.tache == task_id)
     }
 
-    /// Lance une tâche. Si elle tourne déjà, le départ attend la fin (une seule fois).
+    /// Lance une tâche. Si elle tourne déjà, ici ou dans un autre processus, le départ attend la fin
+    /// (une seule fois).
     pub fn launch(&mut self, task_id: &str, ctx: Context, now: NaiveDateTime) {
+        let _ = self.start(task_id, ctx, now, true);
+    }
+
+    /// Lance une tâche, ou dit pourquoi elle ne part pas : elle tourne déjà (ici ou ailleurs). Pour
+    /// la ligne de commande, qui n'attend pas.
+    pub fn try_launch(&mut self, task_id: &str, ctx: Context, now: NaiveDateTime) -> Result<(), String> {
+        self.start(task_id, ctx, now, false)
+    }
+
+    fn locks_dir(&self) -> PathBuf {
+        self.data_dir.join("verrous")
+    }
+
+    /// La tâche tourne-t-elle dans un autre processus (fenêtre, ligne de commande, Planificateur) ?
+    pub fn running_elsewhere(&self, task_id: &str) -> Option<Owner> {
+        if self.active.contains_key(task_id) {
+            return None;
+        }
+        crate::lock::holder(&self.locks_dir(), task_id)
+    }
+
+    fn queue(&mut self, task_id: &str, ctx: Context) {
+        self.pending
+            .entry(task_id.to_string())
+            .and_modify(|p| {
+                p.files.extend(ctx.files.iter().cloned());
+                p.files.sort();
+                p.files.dedup();
+            })
+            .or_insert(ctx);
+    }
+
+    fn start(&mut self, task_id: &str, ctx: Context, now: NaiveDateTime, queue_if_busy: bool) -> Result<(), String> {
         if self.shutting_down {
-            return;
+            return Err("Patronus se ferme.".into());
         }
         if self.active.contains_key(task_id) {
-            self.pending
-                .entry(task_id.to_string())
-                .and_modify(|p| {
-                    p.files.extend(ctx.files.iter().cloned());
-                    p.files.sort();
-                    p.files.dedup();
-                })
-                .or_insert(ctx);
-            return;
+            if queue_if_busy {
+                self.queue(task_id, ctx);
+            }
+            return Err(format!("La tâche {task_id} est déjà en cours."));
         }
+        let lock = match TaskLock::acquire(&self.locks_dir(), task_id) {
+            Ok(l) => l,
+            Err(owner) => {
+                if queue_if_busy {
+                    self.queue(task_id, ctx);
+                }
+                return Err(format!(
+                    "La tâche {task_id} est déjà en cours dans un autre processus (n° {}).",
+                    owner.pid
+                ));
+            }
+        };
         let name = self.loaded.iter().find(|l| l.id == task_id).map(|l| match &l.task {
             Ok(t) => t.nom.clone(),
             Err(_) => task_id.to_string(),
         });
         let mut run =
             Run::new(self.store.new_id(task_id, now), task_id, name.as_deref().unwrap_or(task_id), &ctx.trigger, now);
+        run.proprietaire = Some(Owner::current());
         let task = match self.task(task_id) {
             None => Err(format!("Tâche introuvable ou illisible : {task_id}.")),
             Some(t) => {
@@ -300,9 +388,9 @@ impl Engine {
             Err(why) => {
                 run.statut = Status::Impossible;
                 run.fin = Some(now);
-                run.resume = why;
+                run.resume = why.clone();
                 self.record(run);
-                return;
+                return Err(why);
             }
         };
         if let Err(e) = self.store.save(&run) {
@@ -326,8 +414,11 @@ impl Engine {
                 }
                 None => run_script(&tid, &task, &ctx, &journal, &stop),
             };
+            // Le verrou est rendu avant d'annoncer la fin : un départ en attente peut le prendre aussitôt.
+            drop(lock);
             let _ = tx.send((tid, rid, outcome));
         });
+        Ok(())
     }
 
     /// Demande l'arrêt de l'exécution en cours d'une tâche (et oublie le départ en attente).
@@ -376,6 +467,27 @@ impl Engine {
             if let Some(ctx) = self.pending.remove(&task_id) {
                 self.launch(&task_id, ctx, now);
             }
+        }
+        if self.last_refresh.elapsed() >= self.refresh_every {
+            self.last_refresh = Instant::now();
+            changed |= self.refresh_runs();
+            // Départs en attente d'une exécution menée par un autre processus, maintenant terminée.
+            let ready: Vec<String> = self
+                .pending
+                .keys()
+                .filter(|id| !self.active.contains_key(*id) && self.running_elsewhere(id).is_none())
+                .cloned()
+                .collect();
+            for id in ready {
+                if let Some(ctx) = self.pending.remove(&id) {
+                    self.launch(&id, ctx, now);
+                    changed = true;
+                }
+            }
+        }
+        // Sans fenêtre, le moteur ne lance que ce qu'on lui demande.
+        if self.headless {
+            return changed;
         }
         let due: Vec<String> = self.next.iter().filter(|(_, at)| **at <= now).map(|(id, _)| id.clone()).collect();
         for id in due {
@@ -473,6 +585,45 @@ impl Engine {
             Ok(modified) => modified >= w.start && w.end.is_none_or(|end| modified <= end + margin),
             Err(_) => w.end.is_none_or(|end| SystemTime::now() <= end + self.debounce + margin),
         }
+    }
+
+    /// Relit la boîte sur le disque : entrées écrites par un autre processus (ligne de commande,
+    /// Planificateur), et exécutions qu'il mène. Une exécution « en cours » dont le processus a
+    /// disparu devient « interrompue ». Rend vrai si quelque chose a changé.
+    fn refresh_runs(&mut self) -> bool {
+        let mut changed = false;
+        let ours: Vec<String> = self.active.values().map(|a| a.run_id.clone()).collect();
+        for id in self.store.ids() {
+            if self.runs.iter().any(|r| r.id == id) {
+                continue;
+            }
+            if let Some(run) = self.store.load_one(&id) {
+                if run.statut != Status::EnCours {
+                    self.finished.push(run.id.clone());
+                }
+                self.runs.push(run);
+                changed = true;
+            }
+        }
+        for r in self.runs.iter_mut().filter(|r| r.statut == Status::EnCours && !ours.contains(&r.id)) {
+            let Some(mut fresh) = self.store.load_one(&r.id) else { continue };
+            if fresh.statut == Status::EnCours && !fresh.proprietaire.is_some_and(|o| o.is_alive()) {
+                fresh.statut = Status::Interrompue;
+                fresh.resume = "Le processus qui menait l'exécution s'est arrêté.".into();
+                let _ = self.store.save(&fresh);
+            }
+            if fresh != *r {
+                if fresh.statut != Status::EnCours {
+                    self.finished.push(fresh.id.clone());
+                }
+                *r = fresh;
+                changed = true;
+            }
+        }
+        if changed {
+            self.runs.sort_by(|a, b| b.debut.cmp(&a.debut).then_with(|| b.id.cmp(&a.id)));
+        }
+        changed
     }
 
     /// Exécutions terminées depuis le dernier appel.
@@ -902,5 +1053,110 @@ mod tests {
         assert_eq!(counter.all(), ["à la main"], "ni la relance en attente ni l'échéance");
         e.launch(&id, Context { trigger: "après".into(), files: vec![] }, now);
         assert_eq!(e.running_count(), 0);
+    }
+
+    /// Un autre processus vivant (lancé par le test), pour jouer la fenêtre ou la ligne de commande.
+    fn other_process() -> (std::process::Child, Owner) {
+        use std::os::windows::process::CommandExt;
+        let child = std::process::Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let cree = crate::winproc::created(pid).unwrap();
+        (child, Owner { pid, cree })
+    }
+
+    /// L'ouverture ne déclare pas « interrompue » une exécution qu'un autre processus vivant mène ;
+    /// elle le fait quand ce processus a disparu.
+    #[test]
+    fn opening_does_not_interrupt_a_run_led_by_a_live_process() {
+        let dir = test_dir("engine-foreign");
+        let store = RunStore::new(dir.join("executions"));
+        let (mut child, owner) = other_process();
+        let mut run = Run::new("r1".into(), "revue", "Revue", "ligne de commande", at(21, 10, 0));
+        run.proprietaire = Some(owner);
+        store.save(&run).unwrap();
+        let e = Engine::open(&dir, at(21, 10, 1));
+        assert_eq!(e.runs[0].statut, Status::EnCours, "menée par un autre processus vivant");
+        drop(e);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let e = Engine::open(&dir, at(21, 10, 2));
+        assert_eq!(e.runs[0].statut, Status::Interrompue);
+    }
+
+    /// Sans fenêtre : ni « manquées », ni rattrapage, ni écriture de `planning.json`, ni départ dû.
+    #[test]
+    fn headless_engine_only_runs_what_it_is_asked() {
+        let dir = test_dir("engine-headless");
+        let mut e = Engine::open(&dir, at(20, 18, 0));
+        e.save_task(
+            Some("matin"),
+            &task("echo x", vec![Trigger::Heure { heure: "08:00".into(), jours: vec![], rattrapage: true }]),
+            at(20, 18, 0),
+        )
+        .unwrap();
+        e.shutdown(at(20, 18, 0), Duration::from_secs(1));
+        drop(e);
+        let planning = std::fs::read_to_string(dir.join("planning.json")).unwrap();
+        let mut h = Engine::open_headless(&dir, at(21, 10, 0));
+        h.tick(at(21, 10, 0));
+        assert!(h.runs.is_empty(), "ni manquée ni rattrapage : {:?}", h.runs);
+        assert_eq!(std::fs::read_to_string(dir.join("planning.json")).unwrap(), planning);
+        h.try_launch("matin", Context { trigger: "ligne de commande".into(), files: vec![] }, at(21, 10, 0)).unwrap();
+        wait_idle(&mut h, at(21, 10, 0));
+        assert_eq!(h.runs.len(), 1);
+        assert_eq!(h.runs[0].statut, Status::Reussie);
+    }
+
+    /// Une tâche qui tourne dans un autre processus : la ligne de commande refuse, la fenêtre met le
+    /// départ en attente et le lance quand le verrou se libère.
+    #[test]
+    fn a_task_running_elsewhere_is_refused_or_queued() {
+        let dir = test_dir("engine-elsewhere");
+        let (exec, counter) = fake(Duration::ZERO);
+        let opts = Options { executor: Some(exec), refresh_every: Duration::from_millis(50), ..Options::default() };
+        let mut e = Engine::open_opts(&dir, at(21, 10, 0), opts);
+        e.save_task(Some("revue"), &task("x", vec![]), at(21, 10, 0)).unwrap();
+        let (mut child, owner) = other_process();
+        std::fs::create_dir_all(dir.join("verrous")).unwrap();
+        std::fs::write(dir.join("verrous").join("revue.lock"), serde_json::to_string(&owner).unwrap()).unwrap();
+        assert_eq!(e.running_elsewhere("revue"), Some(owner));
+        let err = e.try_launch("revue", Context { trigger: "ligne de commande".into(), files: vec![] }, at(21, 10, 0));
+        assert!(err.unwrap_err().contains("autre processus"));
+        e.launch("revue", Context { trigger: "à la main".into(), files: vec![] }, at(21, 10, 0));
+        assert!(e.is_pending("revue"));
+        spin(&mut e, at(21, 10, 0), Duration::from_millis(200));
+        assert!(counter.all().is_empty(), "le verrou est tenu");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let start = Instant::now();
+        while counter.all().is_empty() && start.elapsed() < Duration::from_secs(5) {
+            e.tick(at(21, 10, 0));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(counter.all(), ["à la main"], "lancée dès que l'autre processus a disparu");
+    }
+
+    /// La fenêtre voit les résultats écrits par un autre moteur (la ligne de commande) sur le même
+    /// dossier, et les annonce.
+    #[test]
+    fn window_sees_results_written_elsewhere() {
+        let dir = test_dir("engine-refresh");
+        let opts = Options { refresh_every: Duration::from_millis(50), ..Options::default() };
+        let mut window = Engine::open_opts(&dir, at(21, 10, 0), opts);
+        window.save_task(Some("bonjour"), &task("echo bonjour", vec![]), at(21, 10, 0)).unwrap();
+        let mut cli = Engine::open_headless(&dir, at(21, 10, 0));
+        cli.try_launch("bonjour", Context { trigger: "ligne de commande".into(), files: vec![] }, at(21, 10, 0))
+            .unwrap();
+        wait_idle(&mut cli, at(21, 10, 0));
+        assert!(window.runs.is_empty());
+        spin(&mut window, at(21, 10, 0), Duration::from_millis(200));
+        assert_eq!(window.runs.len(), 1);
+        assert_eq!(window.runs[0].statut, Status::Reussie);
+        assert_eq!(window.take_finished().len(), 1, "annoncée comme les autres");
     }
 }
