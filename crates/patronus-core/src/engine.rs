@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
@@ -37,6 +37,14 @@ struct Active {
     stop: Arc<AtomicBool>,
 }
 
+/// Fenêtre de temps de la dernière exécution d'une tâche : ce qu'elle a écrit pendant ce temps lui
+/// est attribué.
+struct Window {
+    run_id: String,
+    start: SystemTime,
+    end: Option<SystemTime>,
+}
+
 pub struct Engine {
     data_dir: PathBuf,
     pub tasks: TaskStore,
@@ -50,6 +58,10 @@ pub struct Engine {
     /// Un déclenchement pendant une exécution attend (un seul par tâche).
     pending: HashMap<String, Context>,
     next: HashMap<String, NaiveDateTime>,
+    windows: HashMap<String, Window>,
+    /// Date de modification déjà prise en compte, par tâche et par fichier : un même changement
+    /// signalé deux fois (création puis écriture, en deux paquets) ne relance pas deux fois.
+    seen: HashMap<(String, PathBuf), SystemTime>,
     done_tx: Sender<(String, String, Outcome)>,
     done_rx: Receiver<(String, String, Outcome)>,
     files_tx: Sender<Vec<PathBuf>>,
@@ -90,6 +102,8 @@ impl Engine {
             active: HashMap::new(),
             pending: HashMap::new(),
             next: HashMap::new(),
+            windows: HashMap::new(),
+            seen: HashMap::new(),
             done_tx,
             done_rx,
             files_tx,
@@ -242,6 +256,8 @@ impl Engine {
         }
         let stop = Arc::new(AtomicBool::new(false));
         self.active.insert(task_id.to_string(), Active { run_id: run.id.clone(), stop: stop.clone() });
+        self.windows
+            .insert(task_id.to_string(), Window { run_id: run.id.clone(), start: SystemTime::now(), end: None });
         let journal = self.store.journal_path(&run.id);
         let tx = self.done_tx.clone();
         let (tid, rid) = (task_id.to_string(), run.id.clone());
@@ -286,6 +302,9 @@ impl Engine {
         while let Ok((task_id, run_id, outcome)) = self.done_rx.try_recv() {
             changed = true;
             self.active.remove(&task_id);
+            if let Some(w) = self.windows.get_mut(&task_id) {
+                w.end = Some(SystemTime::now());
+            }
             if let Some(run) = self.runs.iter_mut().find(|r| r.id == run_id) {
                 run.statut = outcome.status;
                 run.code = outcome.code;
@@ -339,13 +358,23 @@ impl Engine {
                 .filter(|(_, files)| !files.is_empty())
                 .collect();
             for (id, files) in hits {
-                // Une tâche qui écrit dans le dossier qu'elle surveille se relancerait sans fin :
-                // ce qu'elle modifie pendant qu'elle tourne ne la redéclenche pas.
-                if let Some(run_id) = self.running_run_id(&id) {
+                // Une tâche qui écrit dans le dossier qu'elle surveille se relancerait sans fin : ce
+                // qui a été modifié pendant sa dernière exécution lui est attribué et ne la relance pas.
+                let files: Vec<PathBuf> = files.into_iter().filter(|f| self.is_new_change(&id, f)).collect();
+                let (own, files): (Vec<PathBuf>, Vec<PathBuf>) =
+                    files.into_iter().partition(|f| self.attributed_to_last_run(&id, f));
+                if let (false, Some(w)) = (own.is_empty(), self.windows.get(&id)) {
+                    let names: Vec<String> = own.iter().map(|f| f.display().to_string()).collect();
                     log(
-                        &self.store.journal_path(run_id),
-                        &format!("[patronus] {} fichier(s) modifié(s) pendant l'exécution, ignoré(s)", files.len()),
+                        &self.store.journal_path(&w.run_id),
+                        &format!(
+                            "[patronus] {} fichier(s) modifié(s) pendant l'exécution, attribué(s) à la tâche et ignoré(s) : {}",
+                            own.len(),
+                            names.join(", ")
+                        ),
                     );
+                }
+                if files.is_empty() {
                     continue;
                 }
                 let base = self
@@ -364,6 +393,32 @@ impl Engine {
         }
         self.heartbeat(now);
         changed
+    }
+
+    /// Ce changement n'a-t-il pas déjà été pris en compte pour cette tâche ? (Un fichier supprimé est
+    /// toujours un changement.) Retient la date vue ; oublie celles de plus d'une minute.
+    fn is_new_change(&mut self, task_id: &str, file: &Path) -> bool {
+        let Ok(modified) = std::fs::metadata(file).and_then(|m| m.modified()) else { return true };
+        let now = SystemTime::now();
+        self.seen.retain(|_, t| now.duration_since(*t).is_ok_and(|d| d < Duration::from_secs(60)));
+        let key = (task_id.to_string(), file.to_path_buf());
+        if self.seen.get(&key).is_some_and(|t| modified <= *t) {
+            return false;
+        }
+        self.seen.insert(key, modified);
+        true
+    }
+
+    /// Le fichier a-t-il été modifié pendant la dernière exécution de la tâche (ou dans la seconde
+    /// qui suit) ? Un fichier supprimé l'est s'il est signalé pendant l'exécution, ou au plus tard
+    /// le délai de regroupement (plus une seconde) après sa fin.
+    fn attributed_to_last_run(&self, task_id: &str, file: &Path) -> bool {
+        let Some(w) = self.windows.get(task_id) else { return false };
+        let margin = Duration::from_secs(1);
+        match std::fs::metadata(file).and_then(|m| m.modified()) {
+            Ok(modified) => modified >= w.start && w.end.is_none_or(|end| modified <= end + margin),
+            Err(_) => w.end.is_none_or(|end| SystemTime::now() <= end + self.debounce + margin),
+        }
     }
 
     /// Exécutions terminées depuis le dernier appel.
@@ -689,5 +744,57 @@ mod tests {
         let all = counter.all();
         assert_eq!(all.len(), 1, "{all:?}");
         assert!(all[0].contains("guide.md"), "{all:?}");
+    }
+
+    /// Fait tourner le moteur pendant `d`.
+    fn spin(e: &mut Engine, now: NaiveDateTime, d: Duration) {
+        let start = Instant::now();
+        while start.elapsed() < d {
+            e.tick(now);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Une tâche qui écrit dans le dossier qu'elle surveille : ses propres écritures, même
+    /// signalées après sa fin, ne la relancent pas ; une modification faite ensuite la relance.
+    #[test]
+    fn own_write_at_the_end_does_not_retrigger_but_a_later_change_does() {
+        let dir = test_dir("engine-own-write");
+        let watched = dir.join("fabrikam");
+        std::fs::create_dir_all(&watched).unwrap();
+        let now = at(21, 10, 0);
+        let mut e = Engine::open_with(&dir.join("data"), now, None, Duration::from_millis(200));
+        let mut t = task("echo genere> sortie.txt", vec![]);
+        t.action.script.as_mut().unwrap().dossier = Some(watched.clone());
+        t.declencheurs =
+            vec![Trigger::Fichiers { fichiers: FileWatch { dossier: watched.clone(), ..Default::default() } }];
+        let id = e.save_task(None, &t, now).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        e.launch(&id, Context { trigger: "à la main".into(), files: vec![] }, now);
+        wait_idle(&mut e, now);
+        spin(&mut e, now, Duration::from_millis(1500));
+        assert_eq!(
+            e.runs.len(),
+            1,
+            "relancée par ses propres écritures : {:?}",
+            e.runs.iter().map(|r| &r.declencheur).collect::<Vec<_>>()
+        );
+        assert!(e.store.read_journal(&e.runs[0].id).contains("attribué"), "{}", e.store.read_journal(&e.runs[0].id));
+        std::fs::write(watched.join("note.md"), "x").unwrap();
+        let start = Instant::now();
+        while e.runs.len() < 2 && start.elapsed() < Duration::from_secs(5) {
+            e.tick(now);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        wait_idle(&mut e, now);
+        assert_eq!(e.runs.len(), 2);
+        assert!(e.runs[0].declencheur.contains("note.md"), "{}", e.runs[0].declencheur);
+        spin(&mut e, now, Duration::from_millis(1500));
+        assert_eq!(
+            e.runs.len(),
+            2,
+            "la seconde exécution ne se relance pas non plus : {:?}",
+            e.runs.iter().map(|r| &r.declencheur).collect::<Vec<_>>()
+        );
     }
 }

@@ -12,7 +12,7 @@ spécification au plan `docs/superpowers/plans/2026-10-21-passe-complete.md`. Le
 | # | Point | État |
 |---|---|---|
 | A1 | Boutons des lignes de tâches qui reçoivent leurs clics ; tests d'interface | fait |
-| A2 | Tâche qui écrit dans le dossier qu'elle surveille : plus de boucle | à faire |
+| A2 | Tâche qui écrit dans le dossier qu'elle surveille : plus de boucle | fait |
 | A3 | Moteur dans son propre fil, arrêt propre | à faire |
 | A4 | Consigne par l'entrée standard, `claude.exe` ou `claude.cmd`, listes plafonnées | à faire |
 | A5 | Tours et budget du vrai Claude Code ; faux exécutable conforme | à faire |

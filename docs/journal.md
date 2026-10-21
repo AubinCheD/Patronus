@@ -98,3 +98,28 @@ Autres pistes : *Appliquer le diff* dans la copie de travail (après confirmatio
 Fawkes* (session gardée, attend le contrat local), canal nommé (`docs/contrat-local.md`), binaire
 `faux-claude` à sortir de la distribution, tâches propres à un dépôt (`.patronus/`), enchaînement de
 tâches.
+
+## 21/10/2026 (soir) — passe complète
+
+**Demande de l'utilisateur** (effort xhigh) : refaire une passe complète, traiter les quatre points
+remontés, ajouter des fonctionnalités utiles, ajouter superpowers et une feuille de route. Pause de
+deux heures à 19 h 10 (limite d'usage), reprise à 21 h. Format repris de Menagerie : relecture (A),
+points remontés (B), fonctionnalités (C), dans `docs/feuille-de-route.md`, et un plan dans
+`docs/superpowers/plans/`.
+
+**Relecture** : confiée à un relecteur indépendant (sans l'historique de la session), confrontée à la
+documentation de Claude Code (agent de documentation) et à la CLI installée (2.1.306). Deux défauts
+critiques démontrés par essai (boutons de la liste des tâches morts ; tâche qui se relance sans fin
+sur ses propres écritures), dix importants, douze mineurs : tous retenus (A1 à A13).
+
+**Décisions (miennes, provisoires)** :
+- **A2** : un fichier dont la date de modification tombe pendant l'exécution d'une tâche (ou dans la
+  seconde qui suit) lui est attribué et ne la relance pas ; c'est noté dans son journal. Limite
+  assumée : une modification de l'utilisateur pendant l'exécution est ignorée de la même façon. Un
+  même changement signalé deux fois par la surveillance ne relance qu'une fois.
+- **Garde-fou contre les push** : une règle d'outil comme `Bash(git push:*)` laisse passer
+  `git -C . push` (documentation de Claude Code). En plus des règles, la session reçoit une
+  configuration git (`url.patronus-push-interdit:.pushInsteadOf` vide, par `GIT_CONFIG_COUNT`) qui
+  réécrit toute adresse de push vers un protocole inexistant. Vérifié sans rien pousser
+  (`git remote get-url --push`) : un essai avec un vrai `git push`, même vers un dépôt jetable local,
+  a été refusé par le système de permissions de la session, et je ne l'ai pas contourné.
