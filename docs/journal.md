@@ -35,3 +35,24 @@ avec un faux exécutable.
 - Une commande ou une consigne qui ressemble à un secret (jeton connu, `password=`…) rend la tâche
   invalide.
 - Compilation avec la toolchain gnu : même préparation que Fawkes (`tools\setup.ps1`, recopié).
+
+## 21/10/2026 — premier jet
+
+**Pilote** : faire l'interface minimale tôt, juste après l'exécution des scripts ; vérifier
+l'interface par une capture faite par l'application elle-même (l'écran du poste est en veille).
+Fait : `PATRONUS_CAPTURE`, avec un dossier de données isolé (`PATRONUS_DATA_DIR`).
+
+**Choix d'implémentation (miens, provisoires)** :
+- Un fichier modifié par la tâche pendant qu'elle tourne ne la redéclenche pas (sinon une tâche qui
+  écrit dans le dossier qu'elle surveille bouclerait) ; c'est noté dans son journal.
+- Les départs manqués d'un même déclencheur sont regroupés en une seule entrée « manquée » (ou un
+  seul rattrapage).
+- Une exécution laissée « en cours » par un arrêt de Patronus devient « interrompue » au démarrage.
+- Rétention : les résultats lus ou archivés de plus de 30 jours sont supprimés (réglable) ; les non
+  lus restent.
+- Notification Windows : bulle d'une icône de zone de notification, ajoutée à la première
+  notification.
+- `patronus lancer <tâche>` exécute la tâche dans le processus appelant, sans passer par la fenêtre
+  ouverte : en attendant le canal nommé, deux exécutions de la même tâche restent possibles si on
+  lance en ligne de commande pendant qu'elle tourne dans la fenêtre.
+- Contrat local : proposition dans `docs/contrat-local.md`.

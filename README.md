@@ -56,3 +56,61 @@ sans validation.
 5. Ouverture d'une exécution dans Fawkes.
 
 Détail : [`docs/spec.md`](docs/spec.md).
+
+## État
+
+Premier jet (octobre 2026) :
+- tâches en fichiers JSON (`<données>\taches\<id>.json`), éditables dans l'application ;
+- déclencheurs : heure (jours choisis, rattrapage facultatif), intervalle, fichier modifié, à la main
+  (bouton, palette, `patronus lancer <tâche>`) ;
+- action : script PowerShell, cmd ou bash ; les sessions Claude non interactives arrivent ensuite ;
+- garde-fous : durée maximale, une exécution à la fois par tâche (un départ en attente au plus),
+  arrêt par tâche ou global, journal complet, tâche invalide ou soupçonnée de contenir un secret
+  refusée ;
+- boîte de résultats : statut, résumé, journal, filtres, non lus, archivage ; elle survit au
+  redémarrage ; une exécution manquée (Patronus fermé) y est signalée, une exécution coupée par un
+  arrêt de Patronus y apparaît « interrompue » ;
+- notification Windows à la fin, thèmes, raccourcis réglables.
+
+Les tâches ne tournent que lorsque Patronus est ouvert.
+
+## Compilation
+
+Prérequis : Rust stable (toolchain `x86_64-pc-windows-gnu`), composant `llvm-tools`.
+
+```powershell
+tools\setup.ps1            # une fois par clone : dlltool et .cargo\config.toml (non versionné)
+cargo build --release      # → target\release\patronus.exe
+cargo test
+```
+
+## Lancer et vérifier
+
+```powershell
+target\release\patronus.exe                  # la fenêtre
+target\release\patronus.exe lancer <tâche>   # exécute une tâche sans fenêtre, résultat dans la boîte
+```
+
+1. *+ Nouvelle tâche* : un nom, un déclencheur (*+ Heure*, *+ Intervalle* ou *+ Fichier modifié*),
+   une commande (par exemple `Get-Date` en PowerShell), *Enregistrer*.
+2. *▶* sur la tâche, ou attendre son échéance, ou modifier un fichier du dossier surveillé.
+3. Le résultat arrive dans la *Boîte de résultats* (compteur des non lus dans le titre), avec son
+   journal. Fermer et rouvrir : il y est toujours.
+
+Données : `%APPDATA%\Patronus`, ou le dossier désigné par `PATRONUS_DATA_DIR` (essais, profils
+séparés ; une instance par dossier). Pour les essais d'interface, `PATRONUS_CAPTURE=<image.png>`
+enregistre une capture de la fenêtre après 3 s (`PATRONUS_CAPTURE_DELAI`, en secondes) puis ferme ;
+`PATRONUS_CAPTURE_VUE=editeur|reglages|palette` choisit la vue.
+
+| Fichier | Contenu |
+|---|---|
+| `taches\<id>.json` | une tâche (format : `docs/spec.md` §8) ; une tâche supprimée devient `<id>.json.supprimee` |
+| `executions\<id>\run.json` | une entrée de la boîte ; `journal.txt` à côté |
+| `planning.json` | dernière surveillance des échéances (pour signaler les manquées) |
+| `state.json` | réglages (thème, raccourcis, rétention), versionnés |
+
+Le script reçoit `PATRONUS_TACHE`, `PATRONUS_DECLENCHEUR` et `PATRONUS_FICHIERS` (fichiers modifiés,
+un par ligne).
+
+Journal des décisions : [`docs/journal.md`](docs/journal.md). Contrat proposé avec les autres
+modules : [`docs/contrat-local.md`](docs/contrat-local.md).
