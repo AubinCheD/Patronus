@@ -35,30 +35,56 @@ pub fn next_due(task: &Task, t: NaiveDateTime) -> Option<NaiveDateTime> {
     task.declencheurs.iter().filter_map(|tr| next_after(tr, t)).min()
 }
 
+/// Dernier départ au plus tard à `t`, pour un déclencheur horaire (`None` pour les autres), calculé
+/// directement (sans parcourir les départs un à un).
+pub fn latest_at_or_before(trigger: &Trigger, t: NaiveDateTime) -> Option<NaiveDateTime> {
+    match trigger {
+        Trigger::Heure { heure, jours, .. } => {
+            let (h, m) = parse_heure(heure)?;
+            let time = NaiveTime::from_hms_opt(h, m, 0)?;
+            (0..=7).map(|d| t.date() - Duration::days(d)).find_map(|date| {
+                let day_ok =
+                    jours.is_empty() || jours.iter().any(|j| j.index() == date.weekday().num_days_from_monday());
+                let at = date.and_time(time);
+                (day_ok && at <= t).then_some(at)
+            })
+        }
+        Trigger::Intervalle { toutes_les_minutes } => {
+            let n = (*toutes_les_minutes).max(1) as i64;
+            let midnight = t.date().and_hms_opt(0, 0, 0)?;
+            let minute = (t.hour() * 60 + t.minute()) as i64;
+            Some(midnight + Duration::minutes((minute / n) * n))
+        }
+        _ => None,
+    }
+}
+
+/// Dernier départ horaire de la tâche au plus tard à `t`, tous déclencheurs confondus.
+pub fn latest_due(task: &Task, t: NaiveDateTime) -> Option<NaiveDateTime> {
+    task.declencheurs.iter().filter_map(|tr| latest_at_or_before(tr, t)).max()
+}
+
+/// Au-delà, les départs manqués ne sont plus comptés un à un (« au moins … »).
+pub const MISSED_COUNT_CAP: usize = 10_000;
+
 /// Départs manqués dans `]from, to]` : par déclencheur horaire, le dernier manqué et s'il faut le
 /// rattraper. Plusieurs départs manqués d'un même déclencheur n'en font qu'un (on ne rejoue pas
 /// trois jours d'absence trois fois).
 pub fn missed(task: &Task, from: NaiveDateTime, to: NaiveDateTime) -> Vec<Missed> {
     let mut out = Vec::new();
     for tr in &task.declencheurs {
-        let mut last = None;
+        let Some(at) = latest_at_or_before(tr, to).filter(|at| *at > from) else { continue };
         let mut count = 0;
         let mut cur = from;
         while let Some(next) = next_after(tr, cur) {
-            if next > to {
+            if next > to || count >= MISSED_COUNT_CAP {
                 break;
             }
-            last = Some(next);
             count += 1;
             cur = next;
-            if count > 100_000 {
-                break;
-            }
         }
-        if let Some(at) = last {
-            let catch_up = matches!(tr, Trigger::Heure { rattrapage: true, .. });
-            out.push(Missed { at, count, catch_up });
-        }
+        let catch_up = matches!(tr, Trigger::Heure { rattrapage: true, .. });
+        out.push(Missed { at, count, catch_up });
     }
     out
 }
@@ -161,5 +187,29 @@ mod tests {
         assert_eq!(describe(&heure("08:00", vec![])), "chaque jour à 08:00");
         assert_eq!(describe(&heure("08:00", vec![Jour::Lun, Jour::Ven])), "lun, ven à 08:00");
         assert_eq!(describe(&Trigger::Intervalle { toutes_les_minutes: 5 }), "toutes les 5 min");
+    }
+
+    #[test]
+    fn latest_departure_is_computed_directly() {
+        let every_minute = Trigger::Intervalle { toutes_les_minutes: 1 };
+        assert_eq!(latest_at_or_before(&every_minute, at(2026, 10, 21, 10, 7)), Some(at(2026, 10, 21, 10, 7)));
+        let weekly = heure("09:00", vec![Jour::Lun]);
+        // Mercredi 21 : le dernier lundi 9 h est le 19.
+        assert_eq!(latest_at_or_before(&weekly, at(2026, 10, 21, 10, 0)), Some(at(2026, 10, 19, 9, 0)));
+        let mut t = Task::new_script("x");
+        t.declencheurs = vec![weekly, heure("12:00", vec![])];
+        assert_eq!(latest_due(&t, at(2026, 10, 21, 10, 0)), Some(at(2026, 10, 20, 12, 0)));
+    }
+
+    /// Une longue absence avec un départ par minute : la date du dernier départ manqué est juste, le
+    /// compte est plafonné.
+    #[test]
+    fn long_absence_keeps_the_right_last_date() {
+        let mut t = Task::new_script("x");
+        t.declencheurs = vec![Trigger::Intervalle { toutes_les_minutes: 1 }];
+        let from = NaiveDate::from_ymd_opt(2025, 10, 21).unwrap().and_hms_opt(10, 0, 0).unwrap();
+        let m = missed(&t, from, at(2026, 10, 21, 10, 0));
+        assert_eq!(m[0].at, at(2026, 10, 21, 10, 0));
+        assert_eq!(m[0].count, MISSED_COUNT_CAP);
     }
 }

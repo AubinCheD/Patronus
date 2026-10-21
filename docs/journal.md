@@ -149,3 +149,6 @@ sur ses propres écritures), dix importants, douze mineurs : tous retenus (A1 à
 - **A11, encodage** : `chcp 65001` devant les commandes cmd ne change rien (un processus lancé sans
   fenêtre n'a pas de console). La sortie d'un script passe donc par des tubes, lue ligne à ligne :
   une ligne qui n'est pas de l'UTF-8 valide est décodée dans la page de code OEM du poste.
+- **A13** : une échéance tenue avec plus de 5 minutes de retard (ordinateur sorti de veille) est
+  traitée comme une échéance manquée application fermée : signalée, ou rattrapée si la tâche le
+  demande. Les « manquées » d'une tâche partent de la dernière modification de son fichier.

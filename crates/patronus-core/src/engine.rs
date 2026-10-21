@@ -15,7 +15,7 @@ use crate::exec::{Context, Outcome, log, run_script};
 use crate::fsutil::{read_text, write_atomic};
 use crate::lock::TaskLock;
 use crate::run::{Owner, Run, RunStore, Status};
-use crate::schedule::{missed, next_due};
+use crate::schedule::{MISSED_COUNT_CAP, Missed, missed, next_due};
 use crate::task::{Loaded, Task, TaskStore, Trigger};
 use crate::watch::{Matcher, Watcher};
 
@@ -28,6 +28,15 @@ pub struct Planning {
     pub derniere_verification: Option<NaiveDateTime>,
     #[serde(flatten)]
     pub autres: BTreeMap<String, serde_json::Value>,
+}
+
+/// Retard au-delà duquel une échéance est « manquée » (veille) plutôt que lancée en retard.
+const LATE_MINUTES: i64 = 5;
+
+/// Date de modification d'un fichier, en heure locale.
+fn file_time(path: &Path) -> Option<NaiveDateTime> {
+    let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;
+    Some(chrono::DateTime::<chrono::Local>::from(modified).naive_local())
 }
 
 /// Le moteur partagé entre son fil et l'interface.
@@ -518,14 +527,29 @@ impl Engine {
         let due: Vec<String> = self.next.iter().filter(|(_, at)| **at <= now).map(|(id, _)| id.clone()).collect();
         for id in due {
             let at = self.next[&id];
-            if let Some(task) = self.task(&id) {
-                match next_due(task, now) {
-                    Some(n) => self.next.insert(id.clone(), n),
-                    None => self.next.remove(&id),
-                };
+            let Some(task) = self.task(&id).cloned() else {
+                self.next.remove(&id);
+                continue;
+            };
+            match next_due(&task, now) {
+                Some(n) => self.next.insert(id.clone(), n),
+                None => self.next.remove(&id),
+            };
+            changed = true;
+            // Plus de 5 minutes de retard (ordinateur en veille, en hibernation) : comme une échéance
+            // manquée application fermée, rattrapée seulement si la tâche le demande.
+            if now - at > chrono::Duration::minutes(LATE_MINUTES) {
+                let missed = missed(&task, at - chrono::Duration::seconds(1), now);
+                self.handle_missed(
+                    &id,
+                    &task,
+                    &missed,
+                    now,
+                    "l'ordinateur était en veille ou Patronus ne tournait pas",
+                );
+                continue;
             }
             self.launch(&id, Context { trigger: format!("échéance de {}", at.format("%H:%M")), files: vec![] }, now);
-            changed = true;
         }
         let mut changed_files: Vec<PathBuf> = Vec::new();
         while let Ok(msg) = self.files_rx.try_recv() {
@@ -766,53 +790,63 @@ impl Engine {
     }
 
     /// Ce qui devait partir pendant que Patronus était fermé : rattrapé si la tâche le demande,
-    /// sinon signalé dans la boîte.
+    /// sinon signalé dans la boîte. Une tâche dont le fichier a été créé ou modifié pendant la
+    /// fermeture n'a pas de départ manqué d'avant.
     fn report_missed(&mut self, now: NaiveDateTime) {
         if let Some(last) = self.planning.derniere_verification {
-            let tasks: Vec<(String, Task)> = self
+            let tasks: Vec<(String, Task, NaiveDateTime)> = self
                 .loaded
                 .iter()
-                .filter_map(|l| l.task.as_ref().ok().map(|t| (l.id.clone(), t.clone())))
-                .filter(|(_, t)| t.active && t.validate().is_empty())
+                .filter(|l| l.problems.is_empty())
+                .filter_map(|l| {
+                    let task = l.task.as_ref().ok().filter(|t| t.active)?;
+                    let from = file_time(&l.path).map_or(last, |m| m.max(last));
+                    Some((l.id.clone(), task.clone(), from))
+                })
                 .collect();
-            for (id, task) in tasks {
-                let missed = missed(&task, last, now);
-                if missed.is_empty() {
-                    continue;
-                }
-                if let Some(m) = missed.iter().filter(|m| m.catch_up).max_by_key(|m| m.at) {
-                    let trigger = format!("rattrapage de {}", m.at.format("%d/%m %H:%M"));
-                    self.launch(&id, Context { trigger, files: vec![] }, now);
-                    continue;
-                }
-                let latest = missed.iter().map(|m| m.at).max().unwrap_or(now);
-                let count: usize = missed.iter().map(|m| m.count).sum();
-                let mut run = Run::new(
-                    self.store.new_id(&id, now),
-                    &id,
-                    &task.nom,
-                    &format!("échéance de {}", latest.format("%d/%m %H:%M")),
-                    latest,
-                );
-                run.statut = Status::Manquee;
-                run.fin = Some(latest);
-                run.resume = if count > 1 {
-                    format!(
-                        "{count} départs manqués pendant que Patronus était fermé, le dernier le {}.",
-                        latest.format("%d/%m à %H:%M")
-                    )
-                } else {
-                    format!("Départ du {} manqué : Patronus était fermé.", latest.format("%d/%m à %H:%M"))
-                };
-                self.record(run);
+            for (id, task, from) in tasks {
+                let missed = missed(&task, from, now);
+                self.handle_missed(&id, &task, &missed, now, "Patronus était fermé");
             }
         }
         self.planning.derniere_verification = Some(now);
         self.save_planning();
     }
 
+    /// Départs manqués d'une tâche : le plus récent rattrapé si un déclencheur le demande, sinon une
+    /// entrée « manquée » qui dit pourquoi (`why`).
+    fn handle_missed(&mut self, id: &str, task: &Task, missed: &[Missed], now: NaiveDateTime, why: &str) {
+        if missed.is_empty() {
+            return;
+        }
+        if let Some(m) = missed.iter().filter(|m| m.catch_up).max_by_key(|m| m.at) {
+            let trigger = format!("rattrapage de {}", m.at.format("%d/%m %H:%M"));
+            self.launch(id, Context { trigger, files: vec![] }, now);
+            return;
+        }
+        let latest = missed.iter().map(|m| m.at).max().unwrap_or(now);
+        let count: usize = missed.iter().map(|m| m.count).sum();
+        let mut run = Run::new(
+            self.store.new_id(id, now),
+            id,
+            &task.nom,
+            &format!("échéance de {}", latest.format("%d/%m %H:%M")),
+            latest,
+        );
+        run.statut = Status::Manquee;
+        run.fin = Some(latest);
+        let at_least = if missed.iter().any(|m| m.count >= MISSED_COUNT_CAP) { "au moins " } else { "" };
+        run.resume = if count > 1 {
+            format!("{at_least}{count} départs manqués ({why}), le dernier le {}.", latest.format("%d/%m à %H:%M"))
+        } else {
+            format!("Départ du {} manqué : {why}.", latest.format("%d/%m à %H:%M"))
+        };
+        self.record(run);
+    }
+
     fn heartbeat(&mut self, now: NaiveDateTime) {
-        let stale = self.planning.derniere_verification.is_none_or(|t| (now - t).num_seconds() >= 30);
+        // En valeur absolue : au passage à l'heure d'hiver, l'heure recule d'une heure.
+        let stale = self.planning.derniere_verification.is_none_or(|t| (now - t).num_seconds().abs() >= 30);
         if stale {
             self.planning.derniere_verification = Some(now);
             self.save_planning();
@@ -1027,6 +1061,7 @@ mod tests {
         .unwrap();
         e.shutdown(at(20, 18, 0), Duration::from_secs(1));
         drop(e);
+        backdate(&dir.join("taches"), at(20, 17, 0));
         // Rouvert le lendemain à 10 h.
         let mut e = Engine::open_with(&dir, at(21, 10, 0), Some(exec), Duration::from_millis(200));
         wait_idle(&mut e, at(21, 10, 0));
@@ -1317,5 +1352,68 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(counter.all().len(), 1, "{:?}", e.problems);
+    }
+
+    /// Donne aux fichiers des tâches la date de modification `t` (ces tests vivent dans un temps
+    /// fictif, les fichiers dans le vrai).
+    fn backdate(dir: &Path, t: NaiveDateTime) {
+        use chrono::TimeZone;
+        let when: std::time::SystemTime = chrono::Local.from_local_datetime(&t).unwrap().into();
+        for f in std::fs::read_dir(dir).unwrap().flatten() {
+            std::fs::File::options().write(true).open(f.path()).unwrap().set_modified(when).unwrap();
+        }
+    }
+
+    /// Après une veille, une échéance tenue avec plus de 5 minutes de retard est « manquée », sauf si
+    /// la tâche demande le rattrapage.
+    #[test]
+    fn late_after_sleep_is_missed_unless_caught_up() {
+        let dir = test_dir("engine-veille");
+        let (exec, counter) = fake(Duration::ZERO);
+        let mut e = Engine::open_with(&dir, at(21, 7, 0), Some(exec), Duration::from_millis(200));
+        let heure = |rattrapage| vec![Trigger::Heure { heure: "08:00".into(), jours: vec![], rattrapage }];
+        e.save_task(Some("signale"), &task("x", heure(false)), at(21, 7, 0)).unwrap();
+        e.save_task(Some("rattrape"), &task("x", heure(true)), at(21, 7, 0)).unwrap();
+        // Réveil à 8 h 20 : le premier tour après la veille.
+        e.tick(at(21, 8, 20));
+        wait_idle(&mut e, at(21, 8, 20));
+        assert_eq!(counter.all(), ["rattrapage de 21/10 08:00"]);
+        let m = e.runs.iter().find(|r| r.tache == "signale").unwrap();
+        assert_eq!(m.statut, Status::Manquee);
+        assert!(m.resume.contains("en veille"), "{}", m.resume);
+        assert_eq!(e.next_run("signale"), Some(at(22, 8, 0)));
+        // Un petit retard (moins de 5 minutes) part normalement.
+        e.save_task(Some("minute"), &task("x", vec![Trigger::Intervalle { toutes_les_minutes: 60 }]), at(21, 8, 20))
+            .unwrap();
+        e.tick(at(21, 9, 3));
+        wait_idle(&mut e, at(21, 9, 3));
+        assert!(counter.all().contains(&"échéance de 09:00".to_string()), "{:?}", counter.all());
+    }
+
+    /// Une tâche créée pendant la fermeture n'a pas de départ manqué d'avant sa création.
+    #[test]
+    fn new_task_has_no_old_missed() {
+        let dir = test_dir("engine-nouvelle");
+        let e = Engine::open(&dir, at(18, 18, 0));
+        drop(e);
+        // Fichier écrit à la main pendant la fermeture : sa date est maintenant (la vraie).
+        let store = TaskStore::new(dir.join("taches"));
+        store.save("nouvelle", &task("x", vec![Trigger::Intervalle { toutes_les_minutes: 60 }])).unwrap();
+        backdate(&dir.join("taches"), at(21, 9, 30));
+        let e = Engine::open(&dir, at(21, 10, 0));
+        let m: Vec<&Run> = e.runs.iter().filter(|r| r.statut == Status::Manquee).collect();
+        assert_eq!(m.len(), 1, "seulement depuis sa création : {:?}", m.iter().map(|r| &r.resume).collect::<Vec<_>>());
+        assert!(m[0].resume.contains("21/10 à 10:00"), "{}", m[0].resume);
+    }
+
+    /// Au passage à l'heure d'hiver l'heure recule : la surveillance des échéances continue d'être
+    /// notée.
+    #[test]
+    fn clock_change_keeps_the_heartbeat() {
+        let dir = test_dir("engine-heure");
+        let mut e = Engine::open(&dir, at(25, 2, 59));
+        e.tick(at(25, 2, 1));
+        let p: Planning = serde_json::from_str(&std::fs::read_to_string(dir.join("planning.json")).unwrap()).unwrap();
+        assert_eq!(p.derniere_verification, Some(at(25, 2, 1)));
     }
 }
