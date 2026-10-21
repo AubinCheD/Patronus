@@ -163,6 +163,25 @@ pub struct ClaudeAction {
     pub mode_permission: Option<String>,
 }
 
+/// Outils de Claude Code qui ne modifient rien.
+pub const READ_ONLY_TOOLS: [&str; 7] = ["Read", "Grep", "Glob", "LS", "WebSearch", "WebFetch", "TodoWrite"];
+
+/// Modes de permission acceptés (`bypassPermissions` ignorerait la liste des outils, `auto` l'élargirait).
+pub const PERMISSION_MODES: [&str; 4] = ["default", "acceptEdits", "plan", "dontAsk"];
+
+/// Nom de l'outil d'une règle : `Bash(npm outdated)` → `Bash`.
+pub fn tool_name(rule: &str) -> &str {
+    let rule = rule.trim();
+    rule.split_once('(').map_or(rule, |(name, _)| name.trim())
+}
+
+impl ClaudeAction {
+    /// La session peut-elle écrire ? Tout outil au-delà de la lecture le permet.
+    pub fn writes(&self) -> bool {
+        self.outils.iter().any(|t| !READ_ONLY_TOOLS.contains(&tool_name(t)))
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Worktree {
     pub branche: String,
@@ -235,6 +254,21 @@ impl Task {
         }
     }
 
+    /// Mises en garde qui n'empêchent pas la tâche de partir.
+    pub fn warnings(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(c) = &self.action.claude
+            && c.outils.iter().any(|t| matches!(t.trim(), "Bash" | "Bash(*)" | "PowerShell" | "PowerShell(*)"))
+        {
+            out.push(
+                "Bash sans restriction : la session peut lancer n'importe quelle commande dans son worktree. Le push \
+                 reste impossible, mais préférer des commandes précises, comme Bash(npm outdated)."
+                    .into(),
+            );
+        }
+        out
+    }
+
     /// Problèmes qui empêchent la tâche de partir, en français. Vide : la tâche est valide.
     pub fn validate(&self) -> Vec<String> {
         let mut out = Vec::new();
@@ -275,6 +309,25 @@ impl Task {
                 }
                 if self.action.worktree.is_some() && self.depot.is_none() {
                     out.push("Un worktree demande un dépôt.".into());
+                }
+                let mode = c.mode_permission.as_deref().map(str::trim).filter(|m| !m.is_empty());
+                if let Some(m) = mode
+                    && !PERMISSION_MODES.contains(&m)
+                {
+                    out.push(format!(
+                        "Mode de permission « {m} » refusé : seuls le mode par défaut, acceptEdits, plan et dontAsk \
+                         sont permis."
+                    ));
+                }
+                // Une session qui peut écrire ne touche jamais la copie de travail de l'utilisateur.
+                if (c.writes() || mode == Some("acceptEdits"))
+                    && (self.depot.is_none() || self.action.worktree.is_none())
+                {
+                    out.push(
+                        "Une session qui peut écrire (outils au-delà de la lecture, ou acceptEdits) travaille dans un \
+                         worktree dédié : choisir un dépôt et cocher le worktree."
+                            .into(),
+                    );
                 }
             }
         }
@@ -493,6 +546,54 @@ mod tests {
         }
         t.action.claude = Some(ClaudeAction::default());
         assert!(t.validate().join("\n").contains("Deux actions"));
+    }
+
+    fn claude_task(outils: &[&str], depot: bool, worktree: bool) -> Task {
+        let mut t = Task::new_script("Session");
+        t.action.script = None;
+        t.action.claude = Some(ClaudeAction {
+            consigne: "Relis.".into(),
+            outils: outils.iter().map(|s| s.to_string()).collect(),
+            budget_usd: Some(0.5),
+            ..Default::default()
+        });
+        t.depot = depot.then(|| PathBuf::from(r"C:\dev\contoso-api"));
+        t.action.worktree = worktree.then(|| Worktree { branche: "main".into() });
+        t
+    }
+
+    /// Une session qui peut écrire ne touche jamais la copie de travail : dépôt et worktree exigés.
+    #[test]
+    fn write_tools_need_a_worktree() {
+        let needs = |t: &Task| t.validate().join(" ").contains("worktree dédié");
+        assert!(!needs(&claude_task(&[], false, false)), "lecture seule par défaut");
+        assert!(!needs(&claude_task(&["Read", "Grep", "WebSearch"], true, false)));
+        assert!(needs(&claude_task(&["Read", "Edit"], true, false)), "sans worktree");
+        assert!(needs(&claude_task(&["Bash(npm outdated)"], false, false)), "sans dépôt");
+        assert!(!needs(&claude_task(&["Edit", "Write", "Bash(npm test)"], true, true)));
+        let mut accept = claude_task(&[], true, false);
+        accept.action.claude.as_mut().unwrap().mode_permission = Some("acceptEdits".into());
+        assert!(needs(&accept), "acceptEdits écrit aussi");
+    }
+
+    #[test]
+    fn unknown_permission_mode_is_refused() {
+        for (mode, ok) in
+            [("default", true), ("plan", true), ("dontAsk", true), ("bypassPermissions", false), ("auto", false)]
+        {
+            let mut t = claude_task(&[], true, true);
+            t.action.claude.as_mut().unwrap().mode_permission = Some(mode.into());
+            assert_eq!(t.validate().is_empty(), ok, "{mode} : {:?}", t.validate());
+        }
+    }
+
+    #[test]
+    fn unrestricted_bash_is_a_warning_not_an_error() {
+        let t = claude_task(&["Bash"], true, true);
+        assert!(t.validate().is_empty());
+        assert!(t.warnings()[0].contains("Bash sans restriction"));
+        assert!(claude_task(&["Bash(npm outdated)"], true, true).warnings().is_empty());
+        assert_eq!(tool_name(" Bash(git log *) "), "Bash");
     }
 
     #[test]

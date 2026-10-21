@@ -63,10 +63,18 @@ Premier jet (octobre 2026) :
 - tâches en fichiers JSON (`<données>\taches\<id>.json`), éditables dans l'application ;
 - déclencheurs : heure (jours choisis, rattrapage facultatif), intervalle, fichier modifié, à la main
   (bouton, palette, `patronus lancer <tâche>`) ;
-- actions : script PowerShell, cmd ou bash ; session Claude non interactive (`claude -p`), dans le
-  dépôt ou un worktree dédié, outils limités (lecture seule par défaut, push et publication
-  toujours interdits), budget obligatoire surveillé pendant l'exécution, nombre de tours borné ;
-  résumé, coût « équivalent API », transcription et diff dans la boîte ;
+- actions : script PowerShell, cmd ou bash ; session Claude non interactive (`claude -p`) :
+  - lecture seule par défaut ; dès qu'elle peut écrire, dans un worktree dédié (jamais dans la copie
+    de travail) ;
+  - mode restreint de Claude Code (`--restricted` : réglages de l'utilisateur et du dépôt ignorés,
+    outils de fichiers confinés au dossier de travail), seuls les outils intégrés de la tâche
+    (`--tools`), aucun serveur MCP d'ailleurs ;
+  - push, fusion, publication, commentaires de PR interdits ; en plus, toute adresse de push est
+    réécrite vers un protocole inexistant dans l'environnement de la session ;
+  - budget obligatoire (`--max-budget-usd`, et estimation de Patronus en cours de route), tours
+    bornés (`--max-turns`) ;
+  - résumé, coût « équivalent API », appels refusés, transcription et diff dans la boîte ;
+  - Claude Code récent requis (`claude --help` doit citer `--restricted`) ;
 - garde-fous : durée maximale, une exécution à la fois par tâche (un départ en attente au plus),
   arrêt par tâche ou global, journal complet, tâche invalide ou soupçonnée de contenir un secret
   refusée ;

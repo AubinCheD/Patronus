@@ -16,7 +16,7 @@ spécification au plan `docs/superpowers/plans/2026-10-21-passe-complete.md`. Le
 | A3 | Moteur dans son propre fil, arrêt propre | fait |
 | A4 | Consigne par l'entrée standard, `claude.exe` ou `claude.cmd`, listes plafonnées | fait |
 | A5 | Tours et budget du vrai Claude Code ; faux exécutable conforme | fait |
-| A6 | Isolation des sessions : worktree pour écrire, mode restreint, push impossible | à faire |
+| A6 | Isolation des sessions : worktree pour écrire, mode restreint, push impossible | fait |
 | A7 | Processus enfants dans un objet de tâche Windows | à faire |
 | A8 | Fenêtre, ligne de commande et autres processus sur le même dossier | à faire |
 | A9 | Rétention appliquée ; worktrees nettoyés et réconciliés | à faire |

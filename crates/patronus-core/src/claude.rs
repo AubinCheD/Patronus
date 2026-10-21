@@ -15,20 +15,52 @@ use crate::exec::{
 };
 use crate::pricing::{Usage, cost, price_for};
 use crate::run::{Cost, Status};
-use crate::task::Task;
+use crate::task::{Task, tool_name};
 
 /// Outils permis quand la tâche n'en liste aucun : lecture seule.
-pub const READ_ONLY_TOOLS: [&str; 3] = ["Read", "Grep", "Glob"];
+pub const DEFAULT_TOOLS: [&str; 3] = ["Read", "Grep", "Glob"];
 
-/// Jamais permis, quelle que soit la tâche : ce qui part vers l'extérieur passe par un clic.
-pub const FORBIDDEN_TOOLS: [&str; 6] = [
+/// Jamais permis, quelle que soit la tâche : ce qui part vers l'extérieur passe par un clic. Une règle
+/// ne vaut que pour le début de la commande (`git -C . push` échappe à `Bash(git push:*)`) : le push
+/// est en plus rendu impossible au niveau de git (`git_guard_env`).
+pub const FORBIDDEN_TOOLS: [&str; 22] = [
     "Bash(git push:*)",
+    "Bash(git -C * push:*)",
+    "Bash(git -c * push:*)",
     "Bash(git merge:*)",
+    "Bash(git -C * merge:*)",
+    "Bash(gh pr create:*)",
+    "Bash(gh pr comment:*)",
     "Bash(gh pr merge:*)",
+    "Bash(gh pr review:*)",
+    "Bash(gh pr close:*)",
+    "Bash(gh issue create:*)",
+    "Bash(gh issue comment:*)",
+    "Bash(gh issue edit:*)",
+    "Bash(gh issue close:*)",
+    "Bash(gh api:*)",
+    "Bash(gh workflow run:*)",
     "Bash(gh release:*)",
     "Bash(npm publish:*)",
     "Bash(cargo publish:*)",
+    "Bash(dotnet nuget push:*)",
+    "Bash(docker push:*)",
+    "Bash(az repos pr:*)",
 ];
+
+/// Variables d'environnement de la session : toute adresse de push est réécrite vers un protocole
+/// qui n'existe pas (`url.<x>.pushInsteadOf` vide, ajouté après la configuration déjà passée par
+/// `GIT_CONFIG_COUNT`), et git ne demande jamais d'identifiants.
+pub fn git_guard_env(existing_count: Option<&str>) -> Vec<(String, String)> {
+    let n: usize = existing_count.and_then(|c| c.trim().parse().ok()).unwrap_or(0);
+    vec![
+        ("GIT_CONFIG_COUNT".into(), (n + 1).to_string()),
+        (format!("GIT_CONFIG_KEY_{n}"), "url.patronus-push-interdit:.pushInsteadOf".into()),
+        (format!("GIT_CONFIG_VALUE_{n}"), String::new()),
+        ("GIT_TERMINAL_PROMPT".into(), "0".into()),
+        ("GCM_INTERACTIVE".into(), "never".into()),
+    ]
+}
 
 /// L'exécutable de Claude Code : `PATRONUS_CLAUDE` s'il est défini (essais), sinon le premier
 /// `claude.exe` ou `claude.cmd` du `PATH` (installation native ou par npm), sinon `claude`.
@@ -61,15 +93,26 @@ pub fn prompt(task: &Task, ctx: &Context) -> String {
 /// Arguments de `claude` pour une tâche. La consigne n'y figure pas : elle passe par l'entrée
 /// standard (ni limite de longueur, ni retour à la ligne refusé vers un `claude.cmd`, ni consigne
 /// prise pour une option).
+///
+/// Mode restreint : les réglages de l'utilisateur, du dépôt et locaux (qui élargiraient la liste des
+/// outils) sont ignorés, les outils de fichiers confinés au dossier de travail, `bypassPermissions`
+/// refusé ; `--tools` ne laisse exister que les outils intégrés de la tâche, et `--strict-mcp-config`
+/// écarte les serveurs MCP configurés ailleurs.
 pub fn args(task: &Task) -> Vec<String> {
     let c = task.action.claude.clone().unwrap_or_default();
-    let mut a = vec!["-p".to_string(), "--output-format".into(), "stream-json".into(), "--verbose".into()];
-    a.push("--allowedTools".into());
-    if c.outils.is_empty() {
-        a.extend(READ_ONLY_TOOLS.iter().map(|s| s.to_string()));
-    } else {
-        a.extend(c.outils.iter().cloned());
+    let allowed: Vec<String> =
+        if c.outils.is_empty() { DEFAULT_TOOLS.iter().map(|s| s.to_string()).collect() } else { c.outils.clone() };
+    let mut builtin: Vec<&str> = Vec::new();
+    for t in &allowed {
+        let name = tool_name(t);
+        if !name.starts_with("mcp__") && !builtin.contains(&name) {
+            builtin.push(name);
+        }
     }
+    let mut a = vec!["-p".to_string(), "--output-format".into(), "stream-json".into(), "--verbose".into()];
+    a.extend(["--restricted".to_string(), "--strict-mcp-config".into(), "--tools".into(), builtin.join(",")]);
+    a.push("--allowedTools".into());
+    a.extend(allowed);
     a.push("--disallowedTools".into());
     a.extend(FORBIDDEN_TOOLS.iter().map(|s| s.to_string()));
     if let Some(b) = c.budget_usd {
@@ -80,7 +123,7 @@ pub fn args(task: &Task) -> Vec<String> {
         a.push("--max-turns".into());
         a.push(t.to_string());
     }
-    if let Some(m) = c.mode_permission.filter(|m| !m.trim().is_empty()) {
+    if let Some(m) = c.mode_permission.map(|m| m.trim().to_string()).filter(|m| !m.is_empty() && m != "default") {
         a.push("--permission-mode".into());
         a.push(m);
     }
@@ -398,6 +441,7 @@ pub fn run_claude_with(
     }
     let mut cmd = Command::new(exe);
     cmd.args(&args).current_dir(&dir);
+    cmd.envs(git_guard_env(std::env::var("GIT_CONFIG_COUNT").ok().as_deref()));
     let stream_path = run_dir.join("sortie.jsonl");
     let max = Duration::from_secs(task.garde_fous.duree_max_min as u64 * 60);
     let (turns_max, budget) = (c.tours_max, c.budget_usd);
@@ -543,6 +587,53 @@ mod tests {
         assert!(a.iter().any(|x| x == "Bash(git push:*)"));
         assert!(a.windows(2).any(|w| w[0] == "--max-budget-usd" && w[1] == "0.5"));
         assert!(!a.iter().any(|x| x == "--permission-mode"));
+    }
+
+    #[test]
+    fn restricted_mode_and_builtin_tools_only() {
+        let mut t = claude_task();
+        let a = args(&t);
+        assert!(a.iter().any(|x| x == "--restricted") && a.iter().any(|x| x == "--strict-mcp-config"));
+        let tools = |a: &[String]| a[a.iter().position(|x| x == "--tools").unwrap() + 1].clone();
+        assert_eq!(tools(&a), "Read,Grep,Glob");
+        let c = t.action.claude.as_mut().unwrap();
+        c.outils =
+            ["Read", "Edit", "Bash(npm outdated)", "Bash(cargo test)", "mcp__contoso__lire"].map(String::from).to_vec();
+        c.mode_permission = Some("default".into());
+        let a = args(&t);
+        assert_eq!(tools(&a), "Read,Edit,Bash", "outils intégrés seulement, sans doublon");
+        assert!(!a.iter().any(|x| x == "--permission-mode"), "le mode par défaut n'est pas passé");
+        t.action.claude.as_mut().unwrap().mode_permission = Some("plan".into());
+        assert!(args(&t).windows(2).any(|w| w[0] == "--permission-mode" && w[1] == "plan"));
+    }
+
+    #[test]
+    fn push_guard_appends_to_existing_git_config() {
+        let env = git_guard_env(None);
+        assert!(env.contains(&("GIT_CONFIG_COUNT".into(), "1".into())));
+        assert!(env.contains(&("GIT_CONFIG_KEY_0".into(), "url.patronus-push-interdit:.pushInsteadOf".into())));
+        assert!(env.contains(&("GIT_TERMINAL_PROMPT".into(), "0".into())));
+        let env = git_guard_env(Some("2"));
+        assert!(env.contains(&("GIT_CONFIG_COUNT".into(), "3".into())));
+        assert!(env.iter().any(|(k, _)| k == "GIT_CONFIG_KEY_2"));
+    }
+
+    /// Avec l'environnement de la session, git réécrit toute adresse de push (sans rien pousser :
+    /// `git remote get-url --push` montre l'adresse qu'il utiliserait), et garde celle de lecture.
+    #[test]
+    fn push_url_is_rewritten_in_the_session_environment() {
+        let dir = crate::fsutil::test_dir("push-guard");
+        let run = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&dir).args(args).envs(git_guard_env(None)).output().unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        run(&["init", "-q"]);
+        run(&["remote", "add", "origin", "https://contoso.com/api.git"]);
+        assert_eq!(
+            run(&["remote", "get-url", "--push", "origin"]),
+            "patronus-push-interdit:https://contoso.com/api.git"
+        );
+        assert_eq!(run(&["remote", "get-url", "origin"]), "https://contoso.com/api.git");
     }
 
     #[test]

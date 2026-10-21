@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use egui::{RichText, ScrollArea, TextEdit};
 use patronus_core::engine::Engine;
 use patronus_core::run::now;
-use patronus_core::task::{ClaudeAction, FileWatch, Jour, Script, Shell, Task, Trigger, Worktree};
+use patronus_core::task::{ClaudeAction, FileWatch, Jour, PERMISSION_MODES, Script, Shell, Task, Trigger, Worktree};
 
 use super::widgets::patterns_edit;
 use super::{App, View};
@@ -166,6 +166,8 @@ impl App {
                     ed.task.action.script = None;
                     ed.task.action.claude =
                         Some(ClaudeAction { budget_usd: Some(1.0), tours_max: Some(30), ..Default::default() });
+                    // Une session travaille d'office dans un worktree dédié (exigé dès qu'elle peut écrire).
+                    ed.task.action.worktree = Some(Worktree { branche: "main".into() });
                 }
             });
             if let Some(s) = &mut ed.task.action.script {
@@ -217,8 +219,20 @@ impl App {
                     ui.add(
                         TextEdit::singleline(&mut ed.tools)
                             .desired_width(f32::INFINITY)
-                            .hint_text("vide : lecture seule (Read, Grep, Glob)"),
+                            .hint_text("vide : lecture seule (Read, Grep, Glob) ; sinon Read, Edit, Bash(npm test)…"),
                     );
+                    ui.end_row();
+                    ui.label("Permissions");
+                    let current = c.mode_permission.clone().unwrap_or_else(|| "default".into());
+                    egui::ComboBox::new("mode", "mode")
+                        .selected_text(permission_label(&current))
+                        .show_ui(ui, |ui| {
+                            for m in PERMISSION_MODES {
+                                if ui.selectable_label(current == m, permission_label(m)).clicked() {
+                                    c.mode_permission = (m != "default").then(|| m.to_string());
+                                }
+                            }
+                        });
                     ui.end_row();
                     ui.label("Tours max");
                     let mut tours = c.tours_max.unwrap_or(0);
@@ -264,6 +278,9 @@ impl App {
             let problems = built.validate();
             for pb in &problems {
                 ui.label(RichText::new(format!("⚠ {pb}")).color(p.warn));
+            }
+            for w in built.warnings() {
+                ui.label(RichText::new(format!("ⓘ {w}")).color(p.text_dim));
             }
             if let Some(e) = &ed.error {
                 ui.label(RichText::new(e).color(p.danger));
@@ -327,6 +344,17 @@ impl App {
         } else {
             self.view = View::Inbox;
         }
+    }
+}
+
+/// Libellé d'un mode de permission de Claude Code.
+fn permission_label(mode: &str) -> String {
+    match mode {
+        "default" => "par défaut (seuls les outils permis)".into(),
+        "acceptEdits" => "acceptEdits (modifications de fichiers acceptées)".into(),
+        "plan" => "plan (exploration, aucune modification)".into(),
+        "dontAsk" => "dontAsk (tout ce qui demanderait est refusé)".into(),
+        other => other.to_string(),
     }
 }
 

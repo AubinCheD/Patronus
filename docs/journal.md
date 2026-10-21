@@ -134,3 +134,12 @@ sur ses propres écritures), dix importants, douze mineurs : tous retenus (A1 à
   1,25 × l'entrée, sortie minorée d'après le texte visible) : un second garde-fou, plus tardif que
   celui de Claude Code. Un modèle inconnu des tarifs n'est pas estimé. Non vérifié sur une vraie
   session (B4).
+- **A6, isolation** : la CLI installée (2.1.306) a un mode `--restricted` (réglages de
+  l'utilisateur, du dépôt et locaux ignorés, outils qui exécutent du code retirés sauf ceux nommés
+  par `--tools`, outils de fichiers confinés au dossier de travail, `bypassPermissions` refusé,
+  écritures dans les fichiers de réglages et de git soumises à une personne) : Patronus l'utilise
+  avec `--strict-mcp-config` et `--tools`, plutôt que d'empiler des règles. Effet de bord assumé : les
+  autorisations et les serveurs MCP de l'utilisateur ne s'appliquent pas aux sessions de Patronus. Une
+  CLI plus ancienne refusera l'option : l'exécution échoue en le disant (journal).
+- **A6, modes** : seuls le mode par défaut, `acceptEdits`, `plan` et `dontAsk` sont permis
+  (`bypassPermissions` ignorerait la liste des outils, `auto` l'élargirait).

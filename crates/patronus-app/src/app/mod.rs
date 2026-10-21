@@ -182,6 +182,11 @@ impl App {
         self.filter_task.as_deref()
     }
 
+    /// La tâche en cours d'édition, telle qu'elle serait enregistrée.
+    pub fn draft(&self) -> Option<Task> {
+        self.editor.as_ref().map(|e| e.built())
+    }
+
     /// Le moteur, verrouillé (tests) : ne pas garder le verrou pendant une image.
     pub fn engine(&self) -> MutexGuard<'_, Engine> {
         lock(&self.engine)
