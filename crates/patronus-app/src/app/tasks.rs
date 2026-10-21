@@ -1,5 +1,6 @@
 //! Liste des tâches, à gauche : activer, lancer, arrêter, modifier ; dernière et prochaine exécution.
 
+use crate::icons;
 use egui::{Color32, RichText, ScrollArea};
 use patronus_core::engine::Engine;
 use patronus_core::schedule::describe;
@@ -62,22 +63,29 @@ impl App {
                                         ui.label(if task.active { name } else { name.color(p.text_dim) });
                                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                             if e.is_running(id) {
-                                                if ui.small_button("■").on_hover_text("Arrêter").clicked() {
+                                                if ui.small_button(icons::STOP).on_hover_text("Arrêter").clicked() {
                                                     self.acts.push(Act::Stop(id.clone()));
                                                 }
                                                 ui.spinner();
-                                            } else if ui.small_button("▶").on_hover_text("Lancer maintenant").clicked()
+                                            } else if ui
+                                                .small_button(icons::RUN)
+                                                .on_hover_text("Lancer maintenant")
+                                                .clicked()
                                             {
                                                 self.acts.push(Act::Run(id.clone()));
                                             }
-                                            if ui.small_button("✏").on_hover_text("Modifier").clicked() {
+                                            if ui.small_button(icons::EDIT).on_hover_text("Modifier").clicked() {
                                                 self.acts.push(Act::Edit(id.clone()));
                                             }
                                         });
                                     });
                                     let problems = &l.problems;
                                     if !problems.is_empty() {
-                                        ui.label(RichText::new(format!("⚠ {}", problems[0])).color(p.warn).small());
+                                        ui.label(
+                                            RichText::new(format!("{} {}", icons::WARN, problems[0]))
+                                                .color(p.warn)
+                                                .small(),
+                                        );
                                     }
                                     let triggers: Vec<String> = task.declencheurs.iter().map(describe).collect();
                                     let triggers = if triggers.is_empty() {
@@ -85,7 +93,11 @@ impl App {
                                     } else {
                                         triggers.join(" ; ")
                                     };
-                                    ui.label(RichText::new(triggers).small().color(p.text_dim));
+                                    // Sur une ligne (un dossier surveillé peut avoir un long chemin), en entier au survol.
+                                    ui.add(
+                                        egui::Label::new(RichText::new(&triggers).small().color(p.text_dim)).truncate(),
+                                    )
+                                    .on_hover_text(&triggers);
                                     ui.horizontal(|ui| {
                                         if let Some(r) = e.last_run(id) {
                                             dot(ui, p.status(r.statut), 3.5);

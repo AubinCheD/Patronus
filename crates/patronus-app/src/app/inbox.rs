@@ -1,5 +1,6 @@
 //! Boîte de résultats : la liste des exécutions à gauche, le détail de celle choisie à droite.
 
+use crate::icons;
 use std::time::{Duration, Instant};
 
 use egui::{Color32, RichText, ScrollArea};
@@ -47,8 +48,11 @@ impl App {
             let runs: Vec<Run> = self.visible_runs(e).into_iter().cloned().collect();
             if runs.is_empty() {
                 ui.label(
-                    RichText::new("Rien pour l'instant. Lancez une tâche (▶) ou attendez son échéance.")
-                        .color(p.text_dim),
+                    RichText::new(format!(
+                        "Rien pour l'instant. Lancez une tâche ({}) ou attendez son échéance.",
+                        icons::RUN
+                    ))
+                    .color(p.text_dim),
                 );
             }
             ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -123,7 +127,8 @@ impl App {
             facts.push(format!("code {c}"));
         }
         if let Some(c) = &r.cout {
-            let (approx, note) = if c.estime { ("≈ ", " (estimé par Patronus)") } else { ("", "") };
+            let (approx, note) =
+                if c.estime { (format!("{} ", icons::APPROX), " (estimé par Patronus)") } else { (String::new(), "") };
             facts.push(format!(
                 "{approx}{} + {} tokens · {approx}{:.2} $ équivalent API{note}",
                 c.tokens_entree, c.tokens_sortie, c.usd
@@ -132,11 +137,11 @@ impl App {
         ui.label(RichText::new(facts.join(" · ")).color(p.text_dim));
         ui.horizontal_wrapped(|ui| {
             if r.statut == Status::EnCours {
-                if ui.button("■ Arrêter").clicked() {
+                if ui.button(format!("{} Arrêter", icons::STOP)).clicked() {
                     self.acts.push(Act::Stop(r.tache.clone()));
                 }
             } else {
-                if ui.button("▶ Relancer").clicked() {
+                if ui.button(format!("{} Relancer", icons::RUN)).clicked() {
                     self.acts.push(Act::Run(r.tache.clone()));
                 }
                 if r.lu && ui.button("Marquer non lu").clicked() {

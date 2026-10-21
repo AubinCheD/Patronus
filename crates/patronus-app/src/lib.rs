@@ -3,6 +3,7 @@
 
 pub mod app;
 pub mod capture;
+pub mod icons;
 pub mod notify;
 pub mod shortcuts;
 pub mod state;

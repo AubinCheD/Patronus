@@ -1,5 +1,6 @@
 //! Fenêtres des réglages (thème, rétention, notifications, raccourcis) et des problèmes.
 
+use crate::icons;
 use egui::RichText;
 use patronus_core::engine::Engine;
 
@@ -27,6 +28,15 @@ impl App {
                 ui.end_row();
                 ui.label("Notifications");
                 changed |= ui.checkbox(&mut self.state.notifications, "à la fin d'une exécution").changed();
+                ui.end_row();
+                ui.label("Données");
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(self.data_dir.display().to_string()).small())
+                        .on_hover_text("Tâches, exécutions, réglages");
+                    if ui.small_button("Ouvrir").clicked() {
+                        super::widgets::open_path(&self.data_dir);
+                    }
+                });
                 ui.end_row();
             });
             ui.add_space(8.0);
@@ -56,7 +66,7 @@ impl App {
                         if !conflicts.is_empty() {
                             let names: Vec<_> = conflicts.iter().map(|o| o.label()).collect();
                             ui.label(
-                                RichText::new(format!("⚠ aussi : {}", names.join(", ")))
+                                RichText::new(format!("{} aussi : {}", icons::WARN, names.join(", ")))
                                     .color(self.palette.warn)
                                     .small(),
                             );
@@ -85,7 +95,7 @@ impl App {
         let mut clear = false;
         egui::Window::new("Problèmes").open(&mut open).default_width(520.0).show(ctx, |ui| {
             for pb in &e.problems {
-                ui.label(RichText::new(format!("⚠ {pb}")).color(self.palette.warn));
+                ui.label(RichText::new(format!("{} {pb}", icons::WARN)).color(self.palette.warn));
             }
             if ui.button("Tout effacer").clicked() {
                 clear = true;

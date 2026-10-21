@@ -152,3 +152,9 @@ sur ses propres écritures), dix importants, douze mineurs : tous retenus (A1 à
 - **A13** : une échéance tenue avec plus de 5 minutes de retard (ordinateur sorti de veille) est
   traitée comme une échéance manquée application fermée : signalée, ou rattrapée si la tâche le
   demande. Les « manquées » d'une tâche partent de la dernière modification de son fichier.
+- **B1, vérification** : capture à 200 % (`PATRONUS_ZOOM=2`) de la liste des tâches et de la boîte :
+  ▶, ■, ✏ et les pastilles s'affichent. Le test des glyphes a trouvé un vrai manque (« ⓘ », ajouté en
+  A6), remplacé par « ℹ ». Les captures ont aussi montré trois défauts corrigés : barre du haut qui se
+  chevauchait (elle passe à la ligne), chemin du dossier de données qui recouvrait la prochaine
+  échéance (il passe dans les réglages), et taille de fenêtre enregistrée en unités zoomées (la
+  fenêtre rétrécissait d'un lancement à l'autre).

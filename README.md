@@ -118,7 +118,7 @@ dossier de données.
 Données : `%APPDATA%\Patronus`, ou le dossier désigné par `PATRONUS_DATA_DIR` (essais, profils
 séparés ; une instance par dossier). Pour les essais d'interface, `PATRONUS_CAPTURE=<image.png>`
 enregistre une capture de la fenêtre après 3 s (`PATRONUS_CAPTURE_DELAI`, en secondes) puis ferme ;
-`PATRONUS_CAPTURE_VUE=editeur|reglages|palette` choisit la vue.
+`PATRONUS_CAPTURE_VUE=editeur|reglages|palette` choisit la vue, `PATRONUS_ZOOM=2` agrandit l'interface.
 
 | Fichier | Contenu |
 |---|---|

@@ -1,5 +1,6 @@
 //! Éditeur de tâche : nom, dépôt, déclencheurs, action, garde-fous ; validation et aperçu du fichier.
 
+use crate::icons;
 use std::path::PathBuf;
 
 use egui::{RichText, ScrollArea, TextEdit};
@@ -135,7 +136,7 @@ impl App {
                             }
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                            if ui.small_button("✖").on_hover_text("Retirer ce déclencheur").clicked() {
+                            if ui.small_button(icons::REMOVE).on_hover_text("Retirer ce déclencheur").clicked() {
                                 remove = Some(i);
                             }
                         });
@@ -284,10 +285,10 @@ impl App {
             let built = ed.built();
             let problems = built.validate();
             for pb in &problems {
-                ui.label(RichText::new(format!("⚠ {pb}")).color(p.warn));
+                ui.label(RichText::new(format!("{} {pb}", icons::WARN)).color(p.warn));
             }
             for w in built.warnings() {
-                ui.label(RichText::new(format!("ⓘ {w}")).color(p.text_dim));
+                ui.label(RichText::new(format!("{} {w}", icons::INFO)).color(p.text_dim));
             }
             if let Some(e) = &ed.error {
                 ui.label(RichText::new(e).color(p.danger));

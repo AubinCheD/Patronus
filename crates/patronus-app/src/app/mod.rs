@@ -11,6 +11,7 @@ mod settings;
 mod tasks;
 mod widgets;
 
+use crate::icons;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, channel};
@@ -116,6 +117,10 @@ impl App {
         let mut engine = Engine::open_opts(&data_dir, now(), opts);
         engine.problems.splice(0..0, problems);
         crate::theme::apply(&cc.egui_ctx, state.theme);
+        // Essais : `PATRONUS_ZOOM` agrandit l'interface (captures lisibles en taille réelle).
+        if let Some(z) = std::env::var("PATRONUS_ZOOM").ok().and_then(|z| z.parse::<f32>().ok()) {
+            cc.egui_ctx.set_zoom_factor(z.clamp(0.5, 3.0));
+        }
         let palette = crate::theme::current(&cc.egui_ctx);
         let capture = std::env::var("PATRONUS_CAPTURE").ok().map(|p| (p, Instant::now(), false));
         let selected_task = engine.loaded.first().map(|l| l.id.clone());
@@ -371,7 +376,8 @@ impl App {
 
     fn top_bar(&mut self, ui: &mut egui::Ui, e: &Engine) {
         let p = self.palette.clone();
-        ui.horizontal(|ui| {
+        // Les boutons passent à la ligne quand la fenêtre est étroite (ou l'interface agrandie).
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("Patronus").strong().color(p.accent));
             ui.separator();
             let unread = e.unread_count();
@@ -395,27 +401,27 @@ impl App {
                 && let Some(ed) = &self.editor
             {
                 let nom = if ed.task.nom.trim().is_empty() { "nouvelle tâche" } else { ed.task.nom.trim() };
-                let label = format!("✏ Reprendre « {nom} »{}", if ed.dirty() { " (modifiée)" } else { "" });
+                let label =
+                    format!("{} Reprendre « {nom} »{}", icons::EDIT, if ed.dirty() { " (modifiée)" } else { "" });
                 if ui.button(label).clicked() {
                     self.view = View::Editor;
                 }
             }
             let running = e.running_count();
             if ui
-                .add_enabled(running > 0, egui::Button::new("■ Tout arrêter"))
+                .add_enabled(running > 0, egui::Button::new(format!("{} Tout arrêter", icons::STOP)))
                 .on_hover_text(self.shortcuts.text(Command::StopAll))
                 .clicked()
             {
                 self.acts.push(Act::StopAll);
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Réglages").on_hover_text(self.shortcuts.text(Command::Settings)).clicked() {
-                    self.show_settings = !self.show_settings;
-                }
-                if ui.button("Commandes…").on_hover_text(self.shortcuts.text(Command::Palette)).clicked() {
-                    self.palette_open = true;
-                }
-            });
+            ui.separator();
+            if ui.button("Commandes…").on_hover_text(self.shortcuts.text(Command::Palette)).clicked() {
+                self.palette_open = true;
+            }
+            if ui.button("Réglages").on_hover_text(self.shortcuts.text(Command::Settings)).clicked() {
+                self.show_settings = !self.show_settings;
+            }
         });
     }
 
@@ -444,14 +450,10 @@ impl App {
             let n = e.problems.len();
             if n > 0 {
                 ui.separator();
-                if ui.link(RichText::new(format!("⚠ {n} problème(s)")).color(p.warn)).clicked() {
+                if ui.link(RichText::new(format!("{} {n} problème(s)", icons::WARN)).color(p.warn)).clicked() {
                     self.show_problems = true;
                 }
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new(self.data_dir.display().to_string()).small().color(p.text_dim))
-                    .on_hover_text("Dossier des données (tâches, exécutions, réglages)");
-            });
         });
     }
 
@@ -578,7 +580,9 @@ impl eframe::App for App {
         self.capture(&ctx);
         let size = ctx.input(|i| i.viewport().inner_rect.map(|r| r.size()));
         if let Some(s) = size {
-            self.state.taille_fenetre = [s.x, s.y];
+            // En points de l'écran, hors zoom de l'interface : la fenêtre garde sa taille quel que soit le zoom.
+            let zoom = ctx.zoom_factor();
+            self.state.taille_fenetre = [s.x * zoom, s.y * zoom];
         }
         ctx.request_repaint_after(Duration::from_millis(if running > 0 { 250 } else { 1000 }));
     }
