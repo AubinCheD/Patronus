@@ -119,6 +119,9 @@ pub struct Run {
     /// une exécution « en cours » n'est pas déclarée interrompue par un autre.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proprietaire: Option<Owner>,
+    /// Dépôt de la tâche au moment de l'exécution (diff à appliquer, worktree à nettoyer).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depot: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub liens: Vec<String>,
     #[serde(flatten)]
@@ -143,6 +146,7 @@ impl Run {
             worktree: None,
             session_claude: None,
             proprietaire: None,
+            depot: None,
             liens: Vec::new(),
             autres: BTreeMap::new(),
         }
@@ -241,18 +245,18 @@ impl RunStore {
             .collect()
     }
 
-    /// Supprime les entrées archivées ou lues plus anciennes que `days` jours. Les non lues restent.
-    pub fn prune(&self, runs: &mut Vec<Run>, days: u32, now: NaiveDateTime) -> usize {
+    /// Supprime les entrées archivées ou lues plus anciennes que `days` jours (les non lues restent),
+    /// et les rend : leur worktree éventuel est à supprimer aussi.
+    pub fn prune(&self, runs: &mut Vec<Run>, days: u32, now: NaiveDateTime) -> Vec<Run> {
         let limit = now - chrono::Duration::days(days as i64);
-        let before = runs.len();
-        runs.retain(|r| {
-            let old = r.debut < limit && r.statut != Status::EnCours && (r.lu || r.archive);
-            if old {
-                let _ = fs::remove_dir_all(self.run_dir(&r.id));
-            }
-            !old
-        });
-        before - runs.len()
+        let (old, keep): (Vec<Run>, Vec<Run>) = std::mem::take(runs)
+            .into_iter()
+            .partition(|r| r.debut < limit && r.statut != Status::EnCours && (r.lu || r.archive));
+        for r in &old {
+            let _ = fs::remove_dir_all(self.run_dir(&r.id));
+        }
+        *runs = keep;
+        old
     }
 
     pub fn read_journal(&self, id: &str) -> String {
@@ -358,7 +362,7 @@ mod tests {
             store.save(&r).unwrap();
             runs.push(r);
         }
-        assert_eq!(store.prune(&mut runs, 7, at(21, 8)), 1);
+        assert_eq!(store.prune(&mut runs, 7, at(21, 8)).len(), 1);
         assert_eq!(runs.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["vieux-non-lu", "recent-lu"]);
         assert!(!store.run_dir("vieux-lu").exists());
     }

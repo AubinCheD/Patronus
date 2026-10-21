@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use egui::{Color32, Key, RichText};
-use patronus_core::engine::{Engine, Shared, Ticker, lock};
+use patronus_core::engine::{Engine, Options as EngineOptions, Shared, Ticker, lock};
 use patronus_core::exec::Context;
 use patronus_core::run::{Status, now};
 use patronus_core::task::Task;
@@ -106,8 +106,8 @@ impl App {
         let Options { data_dir, state, mut problems, quiet } = opts;
         let (shortcuts, sp) = Shortcuts::from_saved(&state.raccourcis);
         problems.extend(sp);
-        let mut engine = Engine::open(&data_dir, now());
-        engine.retention_days = state.retention_jours;
+        let opts = EngineOptions { retention_days: state.retention_jours, ..EngineOptions::default() };
+        let mut engine = Engine::open_opts(&data_dir, now(), opts);
         engine.problems.splice(0..0, problems);
         crate::theme::apply(&cc.egui_ctx, state.theme);
         let palette = crate::theme::current(&cc.egui_ctx);

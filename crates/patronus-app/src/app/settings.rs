@@ -68,7 +68,7 @@ impl App {
         });
         self.show_settings = open;
         if changed {
-            e.retention_days = self.state.retention_jours;
+            e.set_retention(self.state.retention_jours);
             self.notify_on.store(self.state.notifications, std::sync::atomic::Ordering::Relaxed);
             self.apply_theme(ctx);
             self.save_state(e);

@@ -370,6 +370,37 @@ pub fn remove_worktree(repo: &Path, wt: &Path) -> Result<(), String> {
     git(repo, &["worktree", "remove", "--force", &wt.to_string_lossy()]).map(|_| ())
 }
 
+/// Fiche du worktree d'une exécution (`worktree.json` dans son dossier), écrite dès sa création :
+/// un worktree laissé par une exécution coupée peut être rapproché de son entrée.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WorktreeInfo {
+    pub chemin: PathBuf,
+    pub depot: PathBuf,
+    /// Commit de départ : le diff de la session se calcule depuis lui.
+    pub base: String,
+}
+
+pub fn worktree_info(run_dir: &Path) -> Option<WorktreeInfo> {
+    let text = std::fs::read_to_string(run_dir.join("worktree.json")).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Supprime un worktree d'après son seul chemin : le dépôt principal est retrouvé par git. Un
+/// worktree déjà effacé du disque ne laisse que des métadonnées, que `git worktree prune` nettoie
+/// dans `depot` s'il est connu.
+pub fn discard_worktree(wt: &Path, depot: Option<&Path>) -> Result<(), String> {
+    if !wt.exists() {
+        if let Some(repo) = depot {
+            git(repo, &["worktree", "prune"])?;
+        }
+        return Ok(());
+    }
+    let common = git(wt, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
+    let common = PathBuf::from(common.trim());
+    let repo = common.parent().map(Path::to_path_buf).ok_or("dépôt principal introuvable")?;
+    remove_worktree(&repo, wt)
+}
+
 pub fn run_claude(
     _task_id: &str,
     task: &Task,
@@ -410,6 +441,11 @@ pub fn run_claude_with(
                             wt.branche,
                             &base[..base.len().min(10)]
                         ),
+                    );
+                    let info = WorktreeInfo { chemin: dest.clone(), depot: repo.clone(), base: base.clone() };
+                    let _ = crate::fsutil::write_atomic(
+                        &run_dir.join("worktree.json"),
+                        serde_json::to_string_pretty(&info).unwrap_or_default().as_bytes(),
                     );
                     worktree = Some((repo.clone(), dest.clone(), base));
                     dest

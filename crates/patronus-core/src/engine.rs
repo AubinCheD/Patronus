@@ -155,6 +155,8 @@ pub struct Engine {
     headless: bool,
     refresh_every: Duration,
     last_refresh: Instant,
+    /// Rétention et rapprochement des worktrees à faire au prochain tour (dans le fil du moteur).
+    maintenance_due: bool,
     /// Fermeture demandée : plus aucun départ.
     shutting_down: bool,
 }
@@ -210,11 +212,11 @@ impl Engine {
             headless: opts.headless,
             refresh_every: opts.refresh_every,
             last_refresh: Instant::now(),
+            maintenance_due: !opts.headless,
             shutting_down: false,
         };
         e.reload_tasks(now);
         if !e.headless {
-            e.store.prune(&mut e.runs, e.retention_days, now);
             e.report_missed(now);
         }
         e
@@ -372,6 +374,7 @@ impl Engine {
         let mut run =
             Run::new(self.store.new_id(task_id, now), task_id, name.as_deref().unwrap_or(task_id), &ctx.trigger, now);
         run.proprietaire = Some(Owner::current());
+        run.depot = self.task(task_id).and_then(|t| t.depot.clone());
         let task = match self.task(task_id) {
             None => Err(format!("Tâche introuvable ou illisible : {task_id}.")),
             Some(t) => {
@@ -489,6 +492,10 @@ impl Engine {
         if self.headless {
             return changed;
         }
+        if self.maintenance_due {
+            self.maintenance_due = false;
+            changed |= self.maintenance(now);
+        }
         let due: Vec<String> = self.next.iter().filter(|(_, at)| **at <= now).map(|(id, _)| id.clone()).collect();
         for id in due {
             let at = self.next[&id];
@@ -584,6 +591,81 @@ impl Engine {
         match std::fs::metadata(file).and_then(|m| m.modified()) {
             Ok(modified) => modified >= w.start && w.end.is_none_or(|end| modified <= end + margin),
             Err(_) => w.end.is_none_or(|end| SystemTime::now() <= end + self.debounce + margin),
+        }
+    }
+
+    /// Change la rétention ; elle s'applique au prochain tour.
+    pub fn set_retention(&mut self, days: u32) {
+        self.retention_days = days;
+        self.maintenance_due = true;
+    }
+
+    /// Rétention (avec les worktrees des entrées supprimées) et rapprochement des worktrees laissés
+    /// par une exécution coupée. Rend vrai si la boîte a changé.
+    fn maintenance(&mut self, now: NaiveDateTime) -> bool {
+        let removed = self.store.prune(&mut self.runs, self.retention_days, now);
+        for r in &removed {
+            if let Some(wt) = &r.worktree
+                && let Err(e) = crate::claude::discard_worktree(wt, r.depot.as_deref())
+            {
+                self.problem(format!("Worktree de {} non supprimé ({}) : {e}", r.id, wt.display()));
+            }
+        }
+        self.reconcile_worktrees() || !removed.is_empty()
+    }
+
+    /// Chaque worktree de `<données>\worktrees` sans entrée qui le garde est rapproché de son
+    /// exécution : diff enregistré s'il y a des changements (l'entrée garde le worktree), supprimé
+    /// sinon. Un worktree dont l'exécution est inconnue reste en place et est signalé.
+    fn reconcile_worktrees(&mut self) -> bool {
+        let Ok(entries) = std::fs::read_dir(self.data_dir.join("worktrees")) else { return false };
+        let mut changed = false;
+        for path in entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
+            let run_id = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let run = self.runs.iter().find(|r| r.id == run_id).cloned();
+            // En cours (ici ou ailleurs), ou gardé à dessein avec son diff : on n'y touche pas.
+            if run.as_ref().is_some_and(|r| r.statut == Status::EnCours || r.worktree.is_some()) {
+                continue;
+            }
+            let info = crate::claude::worktree_info(&self.store.run_dir(&run_id));
+            let (Some(mut run), Some(info)) = (run, info) else {
+                self.problem(format!("Worktree sans exécution connue, laissé en place : {}", path.display()));
+                continue;
+            };
+            match crate::claude::worktree_diff(&path, &info.base) {
+                Ok(diff) if !diff.trim().is_empty() => {
+                    let patch = self.store.diff_path(&run.id);
+                    if !patch.exists() {
+                        let _ = write_atomic(&patch, diff.as_bytes());
+                    }
+                    run.worktree = Some(path.clone());
+                    run.resume = format!(
+                        "{}\n\nDiff récupéré du worktree après l'interruption ({}).",
+                        run.resume.trim(),
+                        path.display()
+                    );
+                    run.lu = false;
+                    let _ = self.store.save(&run);
+                    if let Some(r) = self.runs.iter_mut().find(|r| r.id == run.id) {
+                        *r = run;
+                    }
+                    changed = true;
+                }
+                Ok(_) => {
+                    if let Err(e) = crate::claude::remove_worktree(&info.depot, &path) {
+                        self.problem(format!("Worktree vide non supprimé ({}) : {e}", path.display()));
+                    }
+                }
+                Err(e) => self.problem(format!("Worktree illisible ({}) : {e}", path.display())),
+            }
+        }
+        changed
+    }
+
+    /// Ajoute un problème à montrer, sans doublon.
+    fn problem(&mut self, text: String) {
+        if !self.problems.contains(&text) {
+            self.problems.push(text);
         }
     }
 
