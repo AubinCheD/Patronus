@@ -1,0 +1,25 @@
+{
+  "nom": "Revue des dépendances",
+  "depot": "C:\\dev\\contoso-api",
+  "active": true,
+  "declencheurs": [
+    { "heure": "08:00", "jours": ["lun", "mar", "mer", "jeu", "ven"], "rattrapage": true },
+    { "toutes_les_minutes": 120 },
+    { "fichiers": { "dossier": "C:\\dev\\contoso-api", "inclure": ["package.json"], "champ_futur_surveillance": 1 } }
+  ],
+  "action": {
+    "claude": {
+      "consigne": "Liste les dépendances à mettre à jour ; propose un diff pour les mineures.",
+      "outils": ["Read", "Grep", "Edit", "Bash(npm outdated)"],
+      "tours_max": 20,
+      "budget_usd": 1.0,
+      "mode_permission": "acceptEdits",
+      "champ_futur_session": "x"
+    },
+    "worktree": { "branche": "main", "champ_futur_worktree": true },
+    "champ_futur_action": [1, 2]
+  },
+  "garde_fous": { "duree_max_min": 45, "champ_futur_garde_fou": "y" },
+  "sortie": { "notification": false, "champ_futur_sortie": null },
+  "champ_futur": { "a": 1 }
+}

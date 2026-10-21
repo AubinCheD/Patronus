@@ -44,7 +44,7 @@ pub fn script_task(dir: &Path, id: &str, nom: &str, commande: &str) -> Task {
         commande: commande.into(),
         shell: Shell::Cmd,
         dossier: Some(dir.to_path_buf()),
-        env: Default::default(),
+        ..Default::default()
     });
     TaskStore::new(dir.join("taches")).save(id, &t).unwrap();
     t

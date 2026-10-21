@@ -854,8 +854,13 @@ mod tests {
 
     fn task(cmd: &str, triggers: Vec<Trigger>) -> Task {
         let mut t = Task::new_script("Essai northwind");
-        t.action.script =
-            Some(Script { commande: cmd.into(), shell: Shell::Cmd, dossier: None, env: Default::default() });
+        t.action.script = Some(Script {
+            commande: cmd.into(),
+            shell: Shell::Cmd,
+            dossier: None,
+            env: Default::default(),
+            ..Default::default()
+        });
         t.declencheurs = triggers;
         t
     }
@@ -1040,7 +1045,12 @@ mod tests {
         let (exec, counter) = fake(Duration::ZERO);
         let now = at(21, 10, 0);
         let mut e = Engine::open_with(&dir.join("data"), now, Some(exec), Duration::from_millis(200));
-        let fw = FileWatch { dossier: watched.clone(), inclure: vec!["docs/**".into()], exclure: vec![] };
+        let fw = FileWatch {
+            dossier: watched.clone(),
+            inclure: vec!["docs/**".into()],
+            exclure: vec![],
+            ..Default::default()
+        };
         e.save_task(None, &task("x", vec![Trigger::Fichiers { fichiers: fw }]), now).unwrap();
         assert!(e.problems.is_empty(), "{:?}", e.problems);
         std::thread::sleep(Duration::from_millis(200));

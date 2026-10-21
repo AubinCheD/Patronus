@@ -1,0 +1,16 @@
+{
+  "nom": "Point du matin",
+  "active": false,
+  "declencheurs": [],
+  "action": {
+    "script": {
+      "commande": "git log --since=yesterday --oneline",
+      "shell": "powershell",
+      "dossier": "C:\\dev\\northwind",
+      "env": { "LANG": "fr" },
+      "champ_futur_script": 3
+    }
+  },
+  "garde_fous": { "duree_max_min": 30 },
+  "sortie": { "notification": true }
+}

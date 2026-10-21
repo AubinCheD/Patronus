@@ -1,0 +1,20 @@
+{
+  "id": "20261021-080000-revue",
+  "tache": "revue",
+  "tache_nom": "Revue des dépendances",
+  "declencheur": "échéance de 08:00",
+  "debut": "2026-10-21T08:00:00",
+  "fin": "2026-10-21T08:03:12",
+  "statut": "budget_atteint",
+  "code": 1,
+  "resume": "Arrêtée par Claude Code : budget de 1.00 $ atteint.",
+  "cout": { "tokens_entree": 120000, "tokens_sortie": 3400, "usd": 1.02, "estime": true },
+  "lu": true,
+  "archive": true,
+  "worktree": "C:\\donnees\\worktrees\\20261021-080000-revue",
+  "session_claude": "faux-123",
+  "proprietaire": { "pid": 4242, "cree": 133000000000000000 },
+  "depot": "C:\\dev\\contoso-api",
+  "liens": ["https://contoso.com/pr/12"],
+  "champ_futur": { "b": 2 }
+}

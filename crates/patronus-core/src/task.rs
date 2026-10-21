@@ -100,6 +100,9 @@ pub struct FileWatch {
     pub inclure: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclure: Vec<String>,
+    /// Champs inconnus (écrits par une version plus récente), gardés tels quels.
+    #[serde(flatten)]
+    pub autres: BTreeMap<String, Value>,
 }
 
 /// Ce que fait la tâche : exactement une action parmi `script` et `claude`.
@@ -112,6 +115,9 @@ pub struct Action {
     /// Session Claude : travailler dans un worktree dédié de cette branche.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<Worktree>,
+    /// Champs inconnus (écrits par une version plus récente), gardés tels quels.
+    #[serde(flatten)]
+    pub autres: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -125,6 +131,9 @@ pub struct Script {
     /// Variables d'environnement (jamais de secret ici : voir `validate`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
+    /// Champs inconnus (écrits par une version plus récente), gardés tels quels.
+    #[serde(flatten)]
+    pub autres: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -161,6 +170,9 @@ pub struct ClaudeAction {
     pub budget_usd: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode_permission: Option<String>,
+    /// Champs inconnus (écrits par une version plus récente), gardés tels quels.
+    #[serde(flatten)]
+    pub autres: BTreeMap<String, Value>,
 }
 
 /// Outils de Claude Code qui ne modifient rien.
@@ -175,6 +187,13 @@ pub fn tool_name(rule: &str) -> &str {
     rule.split_once('(').map_or(rule, |(name, _)| name.trim())
 }
 
+impl Worktree {
+    /// Worktree dédié de la branche `branche`.
+    pub fn on(branche: &str) -> Worktree {
+        Worktree { branche: branche.to_string(), autres: BTreeMap::new() }
+    }
+}
+
 impl ClaudeAction {
     /// La session peut-elle écrire ? Tout outil au-delà de la lecture le permet.
     pub fn writes(&self) -> bool {
@@ -185,6 +204,9 @@ impl ClaudeAction {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Worktree {
     pub branche: String,
+    /// Champs inconnus (écrits par une version plus récente), gardés tels quels.
+    #[serde(flatten)]
+    pub autres: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -192,6 +214,9 @@ pub struct Guards {
     /// Durée maximale d'une exécution ; au-delà elle est arrêtée.
     #[serde(default = "default_duration")]
     pub duree_max_min: u32,
+    /// Champs inconnus (écrits par une version plus récente), gardés tels quels.
+    #[serde(flatten)]
+    pub autres: BTreeMap<String, Value>,
 }
 
 fn default_duration() -> u32 {
@@ -200,7 +225,7 @@ fn default_duration() -> u32 {
 
 impl Default for Guards {
     fn default() -> Self {
-        Guards { duree_max_min: default_duration() }
+        Guards { duree_max_min: default_duration(), autres: BTreeMap::new() }
     }
 }
 
@@ -209,11 +234,14 @@ pub struct Output {
     /// Notification Windows à la fin.
     #[serde(default = "yes")]
     pub notification: bool,
+    /// Champs inconnus (écrits par une version plus récente), gardés tels quels.
+    #[serde(flatten)]
+    pub autres: BTreeMap<String, Value>,
 }
 
 impl Default for Output {
     fn default() -> Self {
-        Output { notification: true }
+        Output { notification: true, autres: BTreeMap::new() }
     }
 }
 
@@ -226,7 +254,6 @@ pub fn parse_heure(s: &str) -> Option<(u32, u32)> {
 
 /// Ce qui ressemble à un secret dans un texte de tâche : jetons connus ou affectation de mot de passe.
 pub fn looks_like_secret(text: &str) -> bool {
-    let lower = text.to_lowercase();
     let tokens = ["ghp_", "github_pat_", "glpat-", "sk-ant-", "xoxb-", "akia"];
     if text.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-').any(|w| {
         let wl = w.to_lowercase();
@@ -234,9 +261,32 @@ pub fn looks_like_secret(text: &str) -> bool {
     }) {
         return true;
     }
-    ["password=", "password:", "mot de passe:", "mot de passe =", "token=", "secret="]
-        .iter()
-        .any(|k| lower.replace(" :", ":").contains(k))
+    // `password=…`, `token: …` : un secret seulement si la valeur est écrite en clair, pas si elle
+    // vient d'une variable (`$token = Get-Secret …`, `%TOKEN%`) ou d'une commande.
+    let lower = text.to_lowercase();
+    for key in ["password", "mot de passe", "token", "secret"] {
+        let mut from = 0;
+        while let Some(i) = lower[from..].find(key) {
+            // `$token = …` : variable PowerShell ; seule une valeur entre guillemets est écrite en clair
+            // (`$token=Get-Secret` appelle une commande).
+            let variable = lower[..from + i].ends_with('$');
+            let after = &lower[from + i + key.len()..];
+            from += i + key.len();
+            let after = after.trim_start();
+            let Some(value) = after.strip_prefix('=').or_else(|| after.strip_prefix(':')) else { continue };
+            let value = value.trim_start();
+            let quoted = value.starts_with(['"', '\'']);
+            if variable && !quoted {
+                continue;
+            }
+            let value = value.trim_start_matches(['"', '\'']);
+            let literal = value.chars().next().is_some_and(|c| !matches!(c, '$' | '%' | '(' | '{' | '<' | '['));
+            if literal && value.split_whitespace().next().is_some_and(|v| v.len() >= 4) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 impl Task {
@@ -447,7 +497,14 @@ impl TaskStore {
     /// Supprimer une tâche la met de côté (`<id>.json.supprimee`) plutôt que de l'effacer.
     pub fn delete(&self, id: &str) -> std::io::Result<()> {
         let path = self.path(id);
-        fs::rename(&path, path.with_extension("json.supprimee"))
+        // Une tâche déjà mise de côté sous ce nom n'est pas écrasée.
+        let mut aside = path.with_extension("json.supprimee");
+        let mut n = 2;
+        while aside.exists() {
+            aside = path.with_extension(format!("json.supprimee-{n}"));
+            n += 1;
+        }
+        fs::rename(&path, aside)
     }
 }
 
@@ -456,11 +513,57 @@ pub fn read_task(path: &Path) -> Result<Task, String> {
     serde_json::from_str::<Task>(&text).map_err(|e| {
         let msg = e.to_string();
         if msg.contains("did not match any variant") {
-            format!("déclencheur inconnu (ligne {}) : attendu heure, toutes_les_minutes ou fichiers", e.line())
+            explain_triggers(&text).unwrap_or_else(|| format!("déclencheur illisible (ligne {})", e.line()))
         } else {
             format!("fichier illisible : {msg}")
         }
     })
+}
+
+/// Le premier déclencheur qui ne se lit pas, et pourquoi : un déclencheur reconnu à sa clé mais mal
+/// écrit est relu seul, pour que l'erreur dise ce qui ne va pas (« jour inconnu `lundi` »…).
+fn explain_triggers(text: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    struct HeureShape {
+        heure: String,
+        #[serde(default)]
+        jours: Vec<Jour>,
+        #[serde(default)]
+        rattrapage: bool,
+    }
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    struct IntervalleShape {
+        toutes_les_minutes: u32,
+    }
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    struct FichiersShape {
+        fichiers: FileWatch,
+    }
+    let v: Value = serde_json::from_str(text).ok()?;
+    for (i, t) in v["declencheurs"].as_array()?.iter().enumerate() {
+        if serde_json::from_value::<Trigger>(t.clone()).is_ok() {
+            continue;
+        }
+        let n = i + 1;
+        let why = if t.get("heure").is_some() {
+            serde_json::from_value::<HeureShape>(t.clone()).err()
+        } else if t.get("toutes_les_minutes").is_some() {
+            serde_json::from_value::<IntervalleShape>(t.clone()).err()
+        } else if t.get("fichiers").is_some() {
+            serde_json::from_value::<FichiersShape>(t.clone()).err()
+        } else {
+            let keys: Vec<&str> = t.as_object().map(|o| o.keys().map(String::as_str).collect()).unwrap_or_default();
+            return Some(format!(
+                "déclencheur n° {n} inconnu ({}) : attendu heure, toutes_les_minutes ou fichiers",
+                keys.join(", ")
+            ));
+        };
+        return Some(format!("déclencheur n° {n} mal écrit : {}", why.map(|e| e.to_string()).unwrap_or_default()));
+    }
+    None
 }
 
 #[cfg(test)]
@@ -509,7 +612,7 @@ mod tests {
                 fichiers: FileWatch {
                     dossier: "C:\\dev\\fabrikam".into(),
                     inclure: vec!["docs/**".into()],
-                    exclure: vec![],
+                    ..Default::default()
                 },
             },
         ];
@@ -533,7 +636,12 @@ mod tests {
             Trigger::Heure { heure: "25:00".into(), jours: vec![], rattrapage: false },
             Trigger::Intervalle { toutes_les_minutes: 0 },
             Trigger::Fichiers {
-                fichiers: FileWatch { dossier: "".into(), inclure: vec!["[".into()], exclure: vec![] },
+                fichiers: FileWatch {
+                    dossier: "".into(),
+                    inclure: vec!["[".into()],
+                    exclure: vec![],
+                    ..Default::default()
+                },
             },
         ];
         let p = t.validate().join("\n");
@@ -561,7 +669,7 @@ mod tests {
             ..Default::default()
         });
         t.depot = depot.then(|| PathBuf::from(r"C:\dev\contoso-api"));
-        t.action.worktree = worktree.then(|| Worktree { branche: "main".into() });
+        t.action.worktree = worktree.then(|| Worktree::on("main"));
         t
     }
 
@@ -653,6 +761,67 @@ mod tests {
         let p = dir.join("t.json");
         fs::write(&p, r#"{"nom":"x","declencheurs":[{"lune":"pleine"}],"action":{"script":{"commande":"dir"}}}"#)
             .unwrap();
-        assert!(read_task(&p).unwrap_err().contains("déclencheur inconnu"));
+        assert!(
+            read_task(&p).unwrap_err().contains("déclencheur n° 1 inconnu (lune)"),
+            "{}",
+            read_task(&p).unwrap_err()
+        );
+    }
+
+    /// Un déclencheur reconnu mais mal écrit est nommé, avec ce qui ne va pas.
+    #[test]
+    fn malformed_trigger_is_named() {
+        let dir = test_dir("trigger-mal-ecrit");
+        let p = dir.join("t.json");
+        fs::write(
+            &p,
+            r#"{"nom":"x","declencheurs":[{"toutes_les_minutes":5},{"heure":"08:00","jours":["lundi"]}],"action":{"script":{"commande":"dir"}}}"#,
+        )
+        .unwrap();
+        let err = read_task(&p).unwrap_err();
+        assert!(err.contains("déclencheur n° 2 mal écrit") && err.contains("lundi"), "{err}");
+    }
+
+    /// Une valeur lue d'une variable ou d'une commande n'est pas un secret écrit en clair.
+    #[test]
+    fn powershell_variable_is_not_a_secret() {
+        assert!(!looks_like_secret("$token=Get-Secret -Name contoso; git fetch"));
+        assert!(!looks_like_secret("$token = $env:CONTOSO_TOKEN"));
+        assert!(!looks_like_secret("set TOKEN=%CONTOSO_TOKEN%"));
+        assert!(!looks_like_secret("token: (Get-Content jeton.txt)"));
+        assert!(looks_like_secret("token=abcd1234efgh"));
+        assert!(looks_like_secret("mot de passe : hunter22"));
+        assert!(looks_like_secret("SECRET='s3cr3t-valeur'"));
+    }
+
+    /// Supprimer deux fois une tâche du même nom garde les deux versions mises de côté.
+    #[test]
+    fn deleting_twice_keeps_both() {
+        let dir = test_dir("supprimer-deux-fois");
+        let store = TaskStore::new(dir.clone());
+        let mut t = Task::new_script("Tests");
+        for commande in ["cargo test", "npm test"] {
+            t.action.script.as_mut().unwrap().commande = commande.into();
+            store.save("tests", &t).unwrap();
+            store.delete("tests").unwrap();
+        }
+        assert!(fs::read_to_string(dir.join("tests.json.supprimee")).unwrap().contains("cargo test"));
+        assert!(fs::read_to_string(dir.join("tests.json.supprimee-2")).unwrap().contains("npm test"));
+    }
+
+    /// Les champs inconnus sont gardés à tous les niveaux (action, script, session, worktree,
+    /// garde-fous, sortie, surveillance).
+    #[test]
+    fn nested_unknown_fields_are_kept() {
+        let json = r#"{"nom":"x","action":{"script":{"commande":"dir","s":1},"a":2},
+            "garde_fous":{"duree_max_min":5,"g":3},"sortie":{"notification":true,"o":4},
+            "declencheurs":[{"fichiers":{"dossier":"C:/dev","f":5}}]}"#;
+        let t: Task = serde_json::from_str(json).unwrap();
+        let v = serde_json::to_value(&t).unwrap();
+        assert_eq!(v["action"]["script"]["s"], 1);
+        assert_eq!(v["action"]["a"], 2);
+        assert_eq!(v["garde_fous"]["g"], 3);
+        assert_eq!(v["sortie"]["o"], 4);
+        assert_eq!(v["declencheurs"][0]["fichiers"]["f"], 5);
     }
 }

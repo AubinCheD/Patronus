@@ -399,12 +399,8 @@ mod tests {
 
     fn script_task(shell: Shell, commande: &str, dir: &Path) -> Task {
         let mut t = Task::new_script("Essai");
-        t.action.script = Some(Script {
-            commande: commande.into(),
-            shell,
-            dossier: Some(dir.to_path_buf()),
-            env: Default::default(),
-        });
+        t.action.script =
+            Some(Script { commande: commande.into(), shell, dossier: Some(dir.to_path_buf()), ..Default::default() });
         t
     }
 

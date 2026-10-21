@@ -52,7 +52,7 @@ fn task(consigne: &str, depot: &Path, worktree: bool) -> Task {
         tours_max: Some(5),
         ..Default::default()
     });
-    t.action.worktree = worktree.then(|| Worktree { branche: "main".into() });
+    t.action.worktree = worktree.then(|| Worktree::on("main"));
     t.depot = Some(depot.to_path_buf());
     assert!(t.validate().is_empty(), "{:?}", t.validate());
     t
@@ -201,7 +201,7 @@ fn failure_and_missing_branch_say_why() {
     assert!(journal.contains("erreur simulée"), "{journal}");
     let r = repo(&dir);
     let mut t = task("x", &r, true);
-    t.action.worktree = Some(Worktree { branche: "inexistante".into() });
+    t.action.worktree = Some(Worktree::on("inexistante"));
     let (out, _) = run(&dir, &t, "r8");
     assert_eq!(out.status, Status::Impossible);
     assert!(out.summary.contains("Worktree impossible"), "{}", out.summary);

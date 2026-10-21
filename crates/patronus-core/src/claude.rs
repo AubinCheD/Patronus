@@ -356,7 +356,8 @@ pub fn create_worktree(repo: &Path, branch: &str, dest: &Path) -> Result<String,
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    git(repo, &["worktree", "add", "--detach", &dest.to_string_lossy(), branch])?;
+    // `--end-of-options` : une branche qui commencerait par un tiret n'est pas prise pour une option.
+    git(repo, &["worktree", "add", "--detach", "--end-of-options", &dest.to_string_lossy(), branch])?;
     Ok(git(dest, &["rev-parse", "HEAD"])?.trim().to_string())
 }
 
@@ -750,7 +751,7 @@ pas du json
     #[test]
     fn worktree_needs_a_repo() {
         let mut t = claude_task();
-        t.action.worktree = Some(Worktree { branche: "main".into() });
+        t.action.worktree = Some(Worktree::on("main"));
         assert!(t.validate().join(" ").contains("worktree demande un dépôt"));
     }
 }

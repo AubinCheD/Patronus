@@ -125,6 +125,7 @@ mod tests {
             dossier: PathBuf::from(r"C:\dev\Northwind"),
             inclure: inc.iter().map(|s| s.to_string()).collect(),
             exclure: exc.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
         })
     }
 

@@ -156,7 +156,7 @@ impl App {
                     let dossier = ed.task.depot.clone().unwrap_or_default();
                     ed.task
                         .declencheurs
-                        .push(Trigger::Fichiers { fichiers: FileWatch { dossier, inclure: vec![], exclure: vec![] } });
+                        .push(Trigger::Fichiers { fichiers: FileWatch { dossier, inclure: vec![], exclure: vec![], ..Default::default() } });
                 }
             });
 
@@ -174,7 +174,7 @@ impl App {
                     ed.task.action.claude =
                         Some(ClaudeAction { budget_usd: Some(1.0), tours_max: Some(30), ..Default::default() });
                     // Une session travaille d'office dans un worktree dédié (exigé dès qu'elle peut écrire).
-                    ed.task.action.worktree = Some(Worktree { branche: "main".into() });
+                    ed.task.action.worktree = Some(Worktree::on("main"));
                 }
             });
             if let Some(s) = &mut ed.task.action.script {
@@ -261,7 +261,7 @@ impl App {
                     let mut use_wt = ed.task.action.worktree.is_some();
                     ui.horizontal(|ui| {
                         if ui.checkbox(&mut use_wt, "dans un worktree dédié de la branche").changed() {
-                            ed.task.action.worktree = use_wt.then(|| Worktree { branche: "main".into() });
+                            ed.task.action.worktree = use_wt.then(|| Worktree::on("main"));
                         }
                         if let Some(wt) = &mut ed.task.action.worktree {
                             ui.add(TextEdit::singleline(&mut wt.branche).desired_width(140.0));
