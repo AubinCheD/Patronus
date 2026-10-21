@@ -126,3 +126,11 @@ sur ses propres écritures), dix importants, douze mineurs : tous retenus (A1 à
 - **Commit `906c5ca` incomplet** : une erreur de `git add` (chemin de l'ancien `app.rs`) l'a privé du
   moteur, des tests et de la feuille de route ; seul, il ne compile pas. Complété par le commit
   suivant plutôt que réécrit (pas de `--amend` dans ce dépôt) ; un `git bisect` peut le sauter.
+- **A5, format du flux** : d'après la documentation de Claude Code (agent de documentation), le
+  coût n'est donné qu'à la fin (`result`) ; chaque réponse de Claude arrive en un événement par bloc,
+  avec le même `message.id`, et ses tokens de sortie y sont provisoires ; `--max-turns` existe (absent
+  de l'aide). Patronus passe `--max-turns` et `--max-budget-usd`, et estime le coût en cours de
+  route d'après l'usage annoncé (tarifs publics du 06/10/2026 dans `pricing.rs`, écriture en cache à
+  1,25 × l'entrée, sortie minorée d'après le texte visible) : un second garde-fou, plus tardif que
+  celui de Claude Code. Un modèle inconnu des tarifs n'est pas estimé. Non vérifié sur une vraie
+  session (B4).

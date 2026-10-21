@@ -20,6 +20,8 @@ pub enum Status {
     /// Arrêtée à la main.
     Arretee,
     DureeDepassee,
+    /// Nombre de tours maximal atteint (par Claude Code ou par Patronus).
+    ToursAtteints,
     BudgetAtteint,
     /// Départ prévu pendant que Patronus était fermé, non rattrapé.
     Manquee,
@@ -37,6 +39,7 @@ impl Status {
             Status::Echouee => "échouée",
             Status::Arretee => "arrêtée",
             Status::DureeDepassee => "arrêtée : durée dépassée",
+            Status::ToursAtteints => "arrêtée : nombre de tours atteint",
             Status::BudgetAtteint => "arrêtée : budget atteint",
             Status::Manquee => "manquée",
             Status::Interrompue => "interrompue",
@@ -56,6 +59,9 @@ pub struct Cost {
     pub tokens_sortie: u64,
     /// Équivalent API, en dollars, tel que rapporté par Claude.
     pub usd: f64,
+    /// Estimé par Patronus d'après l'usage annoncé (session arrêtée avant son résultat).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub estime: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

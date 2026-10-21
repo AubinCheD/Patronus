@@ -5,6 +5,7 @@ pub mod claude;
 pub mod engine;
 pub mod exec;
 pub mod fsutil;
+pub mod pricing;
 pub mod run;
 pub mod schedule;
 pub mod task;

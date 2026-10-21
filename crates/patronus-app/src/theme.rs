@@ -81,7 +81,7 @@ impl Palette {
             EnCours => self.running,
             Reussie => self.ok,
             Manquee | Arretee | Interrompue => self.warn,
-            Echouee | DureeDepassee | BudgetAtteint | Impossible => self.danger,
+            Echouee | DureeDepassee | BudgetAtteint | ToursAtteints | Impossible => self.danger,
         }
     }
 

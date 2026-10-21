@@ -123,7 +123,11 @@ impl App {
             facts.push(format!("code {c}"));
         }
         if let Some(c) = &r.cout {
-            facts.push(format!("{} + {} tokens · {:.2} $ équivalent API", c.tokens_entree, c.tokens_sortie, c.usd));
+            let (approx, note) = if c.estime { ("≈ ", " (estimé par Patronus)") } else { ("", "") };
+            facts.push(format!(
+                "{approx}{} + {} tokens · {approx}{:.2} $ équivalent API{note}",
+                c.tokens_entree, c.tokens_sortie, c.usd
+            ));
         }
         ui.label(RichText::new(facts.join(" · ")).color(p.text_dim));
         ui.horizontal_wrapped(|ui| {

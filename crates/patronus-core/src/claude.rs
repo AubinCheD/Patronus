@@ -2,17 +2,19 @@
 //! outils limités, budget et nombre de tours bornés. La sortie `stream-json` est gardée
 //! (`sortie.jsonl`), résumée dans le journal, et le diff produit est enregistré (`diff.patch`).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
 use crate::exec::{
     Context, MAX_FILES_IN_PROMPT, Outcome, capped_list, log, run_process_with, work_dir, write_file_list,
 };
-use crate::run::{Cost, Status, read_lossy};
+use crate::pricing::{Usage, cost, price_for};
+use crate::run::{Cost, Status};
 use crate::task::Task;
 
 /// Outils permis quand la tâche n'en liste aucun : lecture seule.
@@ -74,6 +76,10 @@ pub fn args(task: &Task) -> Vec<String> {
         a.push("--max-budget-usd".into());
         a.push(format!("{b}"));
     }
+    if let Some(t) = c.tours_max {
+        a.push("--max-turns".into());
+        a.push(t.to_string());
+    }
     if let Some(m) = c.mode_permission.filter(|m| !m.trim().is_empty()) {
         a.push("--permission-mode".into());
         a.push(m);
@@ -81,17 +87,42 @@ pub fn args(task: &Task) -> Vec<String> {
     a
 }
 
+/// Un message de Claude, dédoublonné : Claude Code émet un événement `assistant` par bloc de contenu,
+/// tous avec le même `message.id`.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Message {
+    model: String,
+    usage: Usage,
+    /// Texte visible du message (réponses et arguments d'outils), en caractères : les tokens de sortie
+    /// annoncés pendant la session sont provisoires, on estime d'après ce texte (minorant : la
+    /// réflexion n'est pas visible).
+    visible_chars: usize,
+}
+
+/// Appel d'outil refusé (`permission_denials` du résultat).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Denial {
+    pub tool: String,
+    pub input: String,
+}
+
 /// Ce qu'on retient du flux `stream-json`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Stream {
-    pub assistant_messages: u32,
+    messages: HashMap<String, Message>,
+    /// Ordre d'arrivée des messages.
+    order: Vec<String>,
     pub session_id: Option<String>,
+    /// Fin de session (`result`) reçue.
+    pub finished: bool,
     pub result: Option<String>,
     pub subtype: Option<String>,
     pub is_error: bool,
+    /// Erreurs annoncées par un résultat en échec (`errors`).
+    pub errors: Vec<String>,
+    pub denials: Vec<Denial>,
+    /// Coût exact, annoncé par Claude Code à la fin.
     pub cost: Option<Cost>,
-    /// Coût le plus élevé annoncé jusqu'ici (`total_cost_usd` de n'importe quel événement).
-    pub spent: f64,
     /// Lignes lisibles pour le journal : textes de Claude et outils appelés.
     pub transcript: Vec<String>,
 }
@@ -105,49 +136,159 @@ fn short(v: &Value, max: usize) -> String {
     if s.chars().count() > max { format!("{}…", s.chars().take(max).collect::<String>()) } else { s }
 }
 
-pub fn parse_stream(text: &str) -> Stream {
-    let mut s = Stream::default();
-    for line in text.lines() {
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-        if let Some(c) = v["total_cost_usd"].as_f64() {
-            s.spent = s.spent.max(c);
+impl Stream {
+    /// Messages distincts de Claude : à peu près le nombre de tours.
+    pub fn turns(&self) -> usize {
+        self.messages.len()
+    }
+
+    /// Coût estimé d'après l'usage annoncé, ou rien si un modèle est inconnu de `pricing`.
+    pub fn estimate(&self) -> Option<f64> {
+        let mut total = 0.0;
+        for m in self.messages.values() {
+            let price = price_for(&m.model)?;
+            let output = m.usage.output.max((m.visible_chars / 4) as u64);
+            total += cost(price, Usage { output, ..m.usage });
         }
+        Some(total)
+    }
+
+    /// Le coût à retenir : celui de Claude Code s'il est arrivé, sinon l'estimation (marquée).
+    pub fn final_cost(&self) -> Option<Cost> {
+        if let Some(c) = &self.cost {
+            return Some(c.clone());
+        }
+        let usd = self.estimate()?;
+        let (mut input, mut output) = (0, 0);
+        for m in self.messages.values() {
+            input += m.usage.input + m.usage.cache_write + m.usage.cache_read;
+            output += m.usage.output.max((m.visible_chars / 4) as u64);
+        }
+        Some(Cost { tokens_entree: input, tokens_sortie: output, usd, estime: true })
+    }
+
+    /// Ajoute une ligne du flux.
+    pub fn feed(&mut self, line: &str) {
+        let Ok(v) = serde_json::from_str::<Value>(line) else { return };
         if let Some(id) = v["session_id"].as_str() {
-            s.session_id.get_or_insert_with(|| id.to_string());
+            self.session_id.get_or_insert_with(|| id.to_string());
         }
         match v["type"].as_str() {
             Some("assistant") => {
-                s.assistant_messages += 1;
-                for block in v["message"]["content"].as_array().into_iter().flatten() {
+                let msg = &v["message"];
+                let id =
+                    msg["id"].as_str().map(str::to_string).unwrap_or_else(|| format!("sans-id-{}", self.order.len()));
+                if !self.messages.contains_key(&id) {
+                    self.order.push(id.clone());
+                }
+                let m = self.messages.entry(id).or_default();
+                if let Some(model) = msg["model"].as_str() {
+                    m.model = model.to_string();
+                }
+                m.usage = m.usage.max(Usage::from_json(&msg["usage"]));
+                for block in msg["content"].as_array().into_iter().flatten() {
                     match block["type"].as_str() {
                         Some("text") => {
-                            s.transcript.push(format!("Claude : {}", block["text"].as_str().unwrap_or("").trim()))
+                            let text = block["text"].as_str().unwrap_or("").trim();
+                            m.visible_chars += text.chars().count();
+                            self.transcript.push(format!("Claude : {text}"));
                         }
-                        Some("tool_use") => s.transcript.push(format!(
-                            "→ {} {}",
-                            block["name"].as_str().unwrap_or("?"),
-                            short(&block["input"], 160)
-                        )),
+                        Some("tool_use") => {
+                            m.visible_chars += block["input"].to_string().chars().count();
+                            self.transcript.push(format!(
+                                "→ {} {}",
+                                block["name"].as_str().unwrap_or("?"),
+                                short(&block["input"], 160)
+                            ));
+                        }
                         _ => {}
                     }
                 }
             }
             Some("result") => {
-                s.result = v["result"].as_str().map(str::to_string);
-                s.subtype = v["subtype"].as_str().map(str::to_string);
-                s.is_error = v["is_error"].as_bool().unwrap_or(false);
-                let u = &v["usage"];
-                let n = |k: &str| u[k].as_u64().unwrap_or(0);
-                s.cost = Some(Cost {
-                    tokens_entree: n("input_tokens") + n("cache_creation_input_tokens") + n("cache_read_input_tokens"),
-                    tokens_sortie: n("output_tokens"),
+                self.finished = true;
+                self.result = v["result"].as_str().map(str::to_string);
+                self.subtype = v["subtype"].as_str().map(str::to_string);
+                self.is_error = v["is_error"].as_bool().unwrap_or(false);
+                self.errors = v["errors"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|e| e.as_str())
+                    .map(str::to_string)
+                    .collect();
+                self.denials = v["permission_denials"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|d| Denial {
+                        tool: d["tool_name"].as_str().unwrap_or("?").to_string(),
+                        input: short(&d["tool_input"], 120),
+                    })
+                    .collect();
+                let u = Usage::from_json(&v["usage"]);
+                self.cost = Some(Cost {
+                    tokens_entree: u.input + u.cache_write + u.cache_read,
+                    tokens_sortie: u.output,
                     usd: v["total_cost_usd"].as_f64().unwrap_or(0.0),
+                    estime: false,
                 });
             }
             _ => {}
         }
     }
+}
+
+/// Le flux en entier (tests).
+pub fn parse_stream(text: &str) -> Stream {
+    let mut s = Stream::default();
+    for line in text.lines() {
+        s.feed(line);
+    }
     s
+}
+
+/// Lecture du flux au fil de l'eau : seules les lignes ajoutées depuis la dernière fois sont lues.
+pub struct StreamReader {
+    path: PathBuf,
+    offset: u64,
+    partial: String,
+    pub stream: Stream,
+}
+
+impl StreamReader {
+    pub fn new(path: &Path) -> StreamReader {
+        StreamReader { path: path.to_path_buf(), offset: 0, partial: String::new(), stream: Stream::default() }
+    }
+
+    /// Lit ce qui a été ajouté au fichier ; une ligne incomplète attend la suite.
+    pub fn poll(&mut self) -> &Stream {
+        use std::io::{Read, Seek, SeekFrom};
+        if let Ok(mut f) = std::fs::File::open(&self.path)
+            && f.seek(SeekFrom::Start(self.offset)).is_ok()
+        {
+            let mut bytes = Vec::new();
+            if let Ok(n) = f.read_to_end(&mut bytes) {
+                self.offset += n as u64;
+                self.partial.push_str(&String::from_utf8_lossy(&bytes));
+                while let Some(i) = self.partial.find('\n') {
+                    let line: String = self.partial.drain(..=i).collect();
+                    self.stream.feed(line.trim_end());
+                }
+            }
+        }
+        &self.stream
+    }
+
+    /// Lit tout ce qui reste, y compris une dernière ligne sans fin de ligne.
+    pub fn finish(mut self) -> Stream {
+        self.poll();
+        let rest = std::mem::take(&mut self.partial);
+        if !rest.trim().is_empty() {
+            self.stream.feed(rest.trim_end());
+        }
+        self.stream
+    }
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
@@ -259,54 +400,88 @@ pub fn run_claude_with(
     cmd.args(&args).current_dir(&dir);
     let stream_path = run_dir.join("sortie.jsonl");
     let max = Duration::from_secs(task.garde_fous.duree_max_min as u64 * 60);
-    let turns_max = c.tours_max;
-    let budget = c.budget_usd;
-    // Pendant l'exécution : tours et coût annoncés dans le flux. Claude Code applique aussi le budget
-    // (`--max-budget-usd`) ; ce contrôle est le filet si un événement le dépasse quand même.
+    let (turns_max, budget) = (c.tours_max, c.budget_usd);
+    // Pendant l'exécution, au plus une fois par seconde : coût estimé d'après l'usage annoncé, et
+    // tours. Claude Code applique lui-même `--max-budget-usd` et `--max-turns` ; ces contrôles sont
+    // le second garde-fou (un modèle inconnu des tarifs n'est pas estimé).
+    let mut reader = StreamReader::new(&stream_path);
+    let mut last_check = Instant::now();
+    let mut patronus_stop: Option<Status> = None;
     let mut check = || {
-        let s = parse_stream(&read_lossy(&stream_path));
-        match (turns_max, budget) {
-            (_, Some(b)) if s.spent > b => {
-                Some((Status::BudgetAtteint, format!("budget de {b:.2} $ dépassé ({:.2} $)", s.spent)))
-            }
-            (Some(t), _) if s.assistant_messages > t => {
-                Some((Status::Arretee, format!("nombre de tours maximal ({t}) atteint")))
+        if last_check.elapsed() < Duration::from_secs(1) {
+            return None;
+        }
+        last_check = Instant::now();
+        let s = reader.poll();
+        let why = match (budget, s.estimate(), turns_max) {
+            (Some(b), Some(spent), _) if spent > b => Some((
+                Status::BudgetAtteint,
+                format!("budget de {b:.2} $ dépassé (environ {spent:.2} $ d'après l'usage annoncé)"),
+            )),
+            (_, _, Some(t)) if s.turns() > 2 * t as usize + 5 => {
+                Some((Status::ToursAtteints, format!("nombre de tours maximal ({t}) dépassé")))
             }
             _ => None,
+        };
+        if let Some((status, _)) = &why {
+            patronus_stop = Some(*status);
         }
+        why
     };
     let (mut status, code) =
         run_process_with(cmd, journal, Some(&stream_path), Some(&consigne_path), stop, max, &mut check);
-    let stream = parse_stream(&read_lossy(&stream_path));
+    let stream = StreamReader::new(&stream_path).finish();
     for line in &stream.transcript {
         log(journal, line);
     }
     let mut summary = stream.result.clone().unwrap_or_default();
-    if status == Status::Reussie && stream.is_error {
-        status = Status::Echouee;
-    }
-    if status == Status::BudgetAtteint || stream.subtype.as_deref().is_some_and(|s| s.contains("budget")) {
-        status = Status::BudgetAtteint;
-        summary = format!("Arrêtée : budget de {:.2} $ atteint.\n{summary}", c.budget_usd.unwrap_or(0.0));
-    }
-    let turns_hit = turns_max.is_some_and(|t| stream.assistant_messages > t)
-        && status == Status::Arretee
-        && !stop.load(std::sync::atomic::Ordering::Relaxed);
-    if turns_hit {
-        summary = format!("Arrêtée : nombre de tours maximal ({}) atteint.\n{summary}", turns_max.unwrap_or(0));
+    match stream.subtype.as_deref() {
+        // Arrêts décidés par Claude Code lui-même.
+        Some("error_max_turns") => {
+            status = Status::ToursAtteints;
+            summary =
+                format!("Arrêtée par Claude Code : nombre de tours maximal ({}) atteint.", turns_max.unwrap_or(0));
+        }
+        Some("error_max_budget_usd") => {
+            status = Status::BudgetAtteint;
+            summary = format!("Arrêtée par Claude Code : budget de {:.2} $ atteint.", budget.unwrap_or(0.0));
+        }
+        Some(sub) if sub.starts_with("error") => {
+            status = Status::Echouee;
+            summary = format!("Échec de Claude Code ({sub}). {}", stream.errors.join(" "));
+        }
+        _ => {}
     }
     match status {
+        Status::Reussie if !stream.finished => {
+            status = Status::Echouee;
+            summary = "Claude Code s'est terminé sans rendre de résultat (voir le journal).".into();
+        }
+        Status::Reussie if stream.is_error => status = Status::Echouee,
         Status::Impossible => {
             summary = format!("Claude Code n'a pas pu être lancé ({}) : voir le journal.", exe.display())
         }
         Status::DureeDepassee => {
             summary = format!("Arrêtée : durée maximale ({} min) dépassée.\n{summary}", task.garde_fous.duree_max_min)
         }
-        Status::Arretee if !turns_hit => summary = format!("Arrêtée à la main.\n{summary}"),
+        Status::BudgetAtteint if patronus_stop == Some(Status::BudgetAtteint) => {
+            summary = format!(
+                "Arrêtée par Patronus : budget de {:.2} $ dépassé d'après l'usage annoncé.\n{summary}",
+                budget.unwrap_or(0.0)
+            )
+        }
+        Status::ToursAtteints if patronus_stop == Some(Status::ToursAtteints) => {
+            summary = format!("Arrêtée par Patronus : nombre de tours ({}) dépassé.\n{summary}", turns_max.unwrap_or(0))
+        }
+        Status::Arretee => summary = format!("Arrêtée à la main.\n{summary}"),
         Status::Echouee if summary.is_empty() => {
             summary = format!("Échec (code {}).", code.map_or("inconnu".into(), |c| c.to_string()));
         }
         _ => {}
+    }
+    if !stream.denials.is_empty() {
+        let list: Vec<String> = stream.denials.iter().map(|d| format!("{} {}", d.tool, d.input)).collect();
+        summary.push_str(&format!("\n\nAppels refusés ({}) : {}", list.len(), list.join(" ; ")));
     }
     // Le worktree est gardé s'il a produit quelque chose, avec son diff ; sinon il est supprimé.
     let mut kept = None;
@@ -332,8 +507,14 @@ pub fn run_claude_with(
             }
         }
     }
-    let mut out =
-        Outcome { status, code, summary: summary.trim().to_string(), cost: stream.cost, worktree: kept, session: None };
+    let mut out = Outcome {
+        status,
+        code,
+        summary: summary.trim().to_string(),
+        cost: stream.final_cost(),
+        worktree: kept,
+        session: None,
+    };
     if let Some(id) = stream.session_id {
         log(journal, &format!("[patronus] session Claude : {id}"));
         out.session = Some(id);
@@ -374,17 +555,51 @@ mod tests {
 
     #[test]
     fn stream_is_summarised() {
+        // Une réponse en deux blocs (même id, même usage), puis une seconde réponse.
         let text = r#"{"type":"system","subtype":"init","session_id":"abc"}
-{"type":"assistant","message":{"content":[{"type":"text","text":"Je regarde."},{"type":"tool_use","name":"Read","input":{"file_path":"Cargo.toml"}}]}}
+{"type":"assistant","message":{"id":"m1","model":"claude-opus-5-5","usage":{"input_tokens":1000,"output_tokens":1},"content":[{"type":"text","text":"Je regarde."}]}}
+{"type":"assistant","message":{"id":"m1","model":"claude-opus-5-5","usage":{"input_tokens":1000,"output_tokens":1},"content":[{"type":"tool_use","name":"Read","input":{"file_path":"Cargo.toml"}}]}}
 pas du json
-{"type":"assistant","message":{"content":[{"type":"text","text":"Fini."}]}}
-{"type":"result","subtype":"success","is_error":false,"result":"Deux mises à jour mineures.","total_cost_usd":0.0421,"usage":{"input_tokens":10,"cache_read_input_tokens":90,"output_tokens":25}}"#;
-        let s = parse_stream(text);
-        assert_eq!(s.assistant_messages, 2);
+{"type":"assistant","message":{"id":"m2","model":"claude-opus-5-5","usage":{"input_tokens":2000,"cache_read_input_tokens":10000,"output_tokens":1},"content":[{"type":"text","text":"Fini."}]}}"#;
+        let mut s = parse_stream(text);
+        assert_eq!(s.turns(), 2, "un tour par message, pas par bloc");
         assert_eq!(s.session_id.as_deref(), Some("abc"));
-        assert_eq!(s.result.as_deref(), Some("Deux mises à jour mineures."));
-        assert_eq!(s.cost, Some(Cost { tokens_entree: 100, tokens_sortie: 25, usd: 0.0421 }));
+        assert!(!s.finished);
         assert_eq!(s.transcript[1], r#"→ Read {"file_path":"Cargo.toml"}"#);
+        // 3 000 tokens d'entrée à 4 $, 10 000 lus en cache à 0,20 $, sortie minorée d'après le texte.
+        let est = s.estimate().unwrap();
+        assert!(est > 0.014 && est < 0.0145, "{est}");
+        assert!(s.final_cost().unwrap().estime);
+        s.feed(r#"{"type":"result","subtype":"success","is_error":false,"result":"Deux mises à jour mineures.","total_cost_usd":0.0421,"usage":{"input_tokens":10,"cache_read_input_tokens":90,"output_tokens":25},"permission_denials":[{"tool_name":"Bash","tool_input":{"command":"rm -rf x"}}]}"#);
+        assert!(s.finished);
+        assert_eq!(s.result.as_deref(), Some("Deux mises à jour mineures."));
+        assert_eq!(s.final_cost(), Some(Cost { tokens_entree: 100, tokens_sortie: 25, usd: 0.0421, estime: false }));
+        assert_eq!(s.denials, [Denial { tool: "Bash".into(), input: r#"{"command":"rm -rf x"}"#.into() }]);
+    }
+
+    #[test]
+    fn unknown_model_is_not_estimated() {
+        let s = parse_stream(
+            r#"{"type":"assistant","message":{"id":"m1","model":"modele-inconnu","usage":{"input_tokens":5},"content":[]}}"#,
+        );
+        assert_eq!(s.estimate(), None);
+    }
+
+    #[test]
+    fn reader_reads_only_what_was_added() {
+        let dir = crate::fsutil::test_dir("stream-reader");
+        let path = dir.join("sortie.jsonl");
+        let line = |id: &str| {
+            format!(r#"{{"type":"assistant","message":{{"id":"{id}","model":"claude-opus-5-5","content":[]}}}}"#)
+        };
+        std::fs::write(&path, format!("{}\n{}", line("a"), &line("b")[..20])).unwrap();
+        let mut r = StreamReader::new(&path);
+        assert_eq!(r.poll().turns(), 1, "la ligne incomplète attend");
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        use std::io::Write;
+        write!(f, "{}\n{}", &line("b")[20..], line("c")).unwrap();
+        assert_eq!(r.poll().turns(), 2);
+        assert_eq!(r.finish().turns(), 3, "la dernière ligne sans fin de ligne est lue à la fin");
     }
 
     #[test]

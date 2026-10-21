@@ -76,10 +76,11 @@ fn result_cost_and_session_reach_the_outcome() {
     assert!(out.summary.contains("Read Grep Glob"), "lecture seule par défaut : {}", out.summary);
     let cost = out.cost.unwrap();
     assert_eq!((cost.tokens_entree, cost.tokens_sortie), (1000, 50));
-    assert!((cost.usd - 0.0123).abs() < 1e-9);
+    assert!((cost.usd - 0.005).abs() < 1e-9, "{}", cost.usd);
+    assert!(!cost.estime, "coût exact de Claude Code");
     assert_eq!(out.session.as_deref(), Some("faux-123"));
     assert!(journal.contains("Claude : Étape 1.") && journal.contains("→ Read"), "{journal}");
-    assert!(journal.contains("--max-budget-usd 0.5"));
+    assert!(journal.contains("--max-budget-usd 0.5") && journal.contains("--max-turns 5"), "{journal}");
 }
 
 #[test]
@@ -109,32 +110,81 @@ fn worktree_without_changes_is_removed() {
     assert!(!dir.join("donnees/executions/r3/diff.patch").exists());
 }
 
+/// Claude Code arrête lui-même la session au nombre de tours (`--max-turns`).
 #[test]
-fn too_many_turns_stop_the_session() {
+fn max_turns_from_claude_code() {
     let dir = setup("tours");
     let mut t = task("Longue. [tours:20]", &dir, false);
     t.action.claude.as_mut().unwrap().tours_max = Some(2);
     let (out, journal) = run(&dir, &t, "r4");
-    assert_eq!(out.status, Status::Arretee, "{journal}");
-    assert!(out.summary.contains("tours maximal (2)"), "{}", out.summary);
+    assert_eq!(out.status, Status::ToursAtteints, "{journal}");
+    assert!(out.summary.contains("Arrêtée par Claude Code : nombre de tours maximal (2)"), "{}", out.summary);
+    assert_eq!(journal.matches("Claude : Étape").count(), 2, "un message par réponse, pas par bloc : {journal}");
 }
 
+/// Claude Code n'applique pas le budget : Patronus l'estime d'après l'usage de chaque message et
+/// arrête la session, sans attendre sa fin ; le coût estimé est gardé.
 #[test]
-fn budget_exceeded_while_running_stops_cleanly() {
+fn estimated_budget_stops_the_session() {
     let dir = setup("budget");
     let start = std::time::Instant::now();
-    let (out, journal) = run(&dir, &task("Chère. [cout:0.8]", &dir, false), "r5");
+    let (out, journal) = run(&dir, &task("Chère. [tours:20][lent][gros][ignorer-budget]", &dir, false), "r5");
     assert_eq!(out.status, Status::BudgetAtteint, "{journal}");
-    assert!(out.summary.contains("budget de 0.50 $"), "{}", out.summary);
-    assert!(start.elapsed() < std::time::Duration::from_secs(4), "arrêtée avant la fin");
-    assert!(journal.contains("budget de 0.50 $ dépassé"), "{journal}");
+    assert!(out.summary.contains("Arrêtée par Patronus : budget de 0.50 $"), "{}", out.summary);
+    assert!(start.elapsed() < std::time::Duration::from_secs(5), "arrêtée avant la fin (6 s)");
+    let cost = out.cost.expect("coût estimé");
+    assert!(cost.estime && cost.usd > 0.5, "{cost:?}");
+    assert!(journal.contains("d'après l'usage annoncé"), "{journal}");
 }
 
+/// Claude Code arrête lui-même la session au budget (`--max-budget-usd`).
 #[test]
-fn budget_reached_by_claude_code_is_reported() {
+fn budget_from_claude_code() {
     let dir = setup("budget-cli");
-    let (out, _) = run(&dir, &task("[budget-cli]", &dir, false), "r6");
-    assert_eq!(out.status, Status::BudgetAtteint);
+    let (out, journal) = run(&dir, &task("[tours:20][gros]", &dir, false), "r6");
+    assert_eq!(out.status, Status::BudgetAtteint, "{journal}");
+    assert!(out.summary.contains("Arrêtée par Claude Code : budget de 0.50 $"), "{}", out.summary);
+    assert!(!out.cost.unwrap().estime);
+}
+
+/// Une session qui se termine sans résultat n'est pas « réussie ».
+#[test]
+fn no_result_is_a_failure() {
+    let dir = setup("sans-resultat");
+    let (out, journal) = run(&dir, &task("[sans-resultat]", &dir, false), "r12");
+    assert_eq!(out.status, Status::Echouee, "{journal}");
+    assert!(out.summary.contains("sans rendre de résultat"), "{}", out.summary);
+    assert!(out.cost.is_some_and(|c| c.estime), "coût estimé malgré tout");
+}
+
+/// Les appels d'outils refusés sont listés dans le résumé.
+#[test]
+fn denials_are_listed() {
+    let dir = setup("refus");
+    let (out, _) = run(&dir, &task("[refus]", &dir, false), "r13");
+    assert_eq!(out.status, Status::Reussie);
+    assert!(out.summary.contains("Appels refusés (1) : Bash"), "{}", out.summary);
+    assert!(out.summary.contains("git -C . push"), "{}", out.summary);
+}
+
+/// Arrêtée à la main avant son résultat : le coût estimé est gardé.
+#[test]
+fn stopped_session_keeps_its_estimated_cost() {
+    let dir = setup("arret");
+    let t = task("[tours:20][lent]", &dir, false);
+    let run_dir = dir.join("donnees").join("executions").join("r14");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let s2 = stop.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(900));
+        s2.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    let ctx = Context { trigger: "à la main".into(), files: vec![] };
+    let out = run_claude("revue", &t, &ctx, &run_dir.join("journal.txt"), &stop, &dir.join("donnees"), "r14");
+    assert_eq!(out.status, Status::Arretee, "{}", out.summary);
+    let cost = out.cost.expect("coût estimé");
+    assert!(cost.estime && cost.usd > 0.0, "{cost:?}");
 }
 
 #[test]
