@@ -70,7 +70,8 @@ pub fn load(dir: &Path) -> (State, Vec<String>) {
         Err(e) => {
             let aside = dir.join("state.illisible.json");
             let _ = fs::copy(&path, &aside);
-            problems.push(format!("Réglages illisibles ({e}) : mis de côté dans {}, valeurs par défaut.", aside.display()));
+            problems
+                .push(format!("Réglages illisibles ({e}) : mis de côté dans {}, valeurs par défaut.", aside.display()));
             return (State::default(), problems);
         }
     };

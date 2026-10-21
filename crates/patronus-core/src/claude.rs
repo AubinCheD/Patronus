@@ -17,8 +17,14 @@ use crate::task::Task;
 pub const READ_ONLY_TOOLS: [&str; 3] = ["Read", "Grep", "Glob"];
 
 /// Jamais permis, quelle que soit la tâche : ce qui part vers l'extérieur passe par un clic.
-pub const FORBIDDEN_TOOLS: [&str; 6] =
-    ["Bash(git push:*)", "Bash(git merge:*)", "Bash(gh pr merge:*)", "Bash(gh release:*)", "Bash(npm publish:*)", "Bash(cargo publish:*)"];
+pub const FORBIDDEN_TOOLS: [&str; 6] = [
+    "Bash(git push:*)",
+    "Bash(git merge:*)",
+    "Bash(gh pr merge:*)",
+    "Bash(gh release:*)",
+    "Bash(npm publish:*)",
+    "Bash(cargo publish:*)",
+];
 
 /// L'exécutable de Claude Code : `PATRONUS_CLAUDE` s'il est défini (essais), sinon `claude`.
 pub fn claude_exe() -> PathBuf {
@@ -41,7 +47,8 @@ pub fn prompt(task: &Task, ctx: &Context) -> String {
 /// Arguments de `claude` pour une tâche.
 pub fn args(task: &Task, ctx: &Context) -> Vec<String> {
     let c = task.action.claude.clone().unwrap_or_default();
-    let mut a = vec!["-p".to_string(), prompt(task, ctx), "--output-format".into(), "stream-json".into(), "--verbose".into()];
+    let mut a =
+        vec!["-p".to_string(), prompt(task, ctx), "--output-format".into(), "stream-json".into(), "--verbose".into()];
     a.push("--allowedTools".into());
     if c.outils.is_empty() {
         a.extend(READ_ONLY_TOOLS.iter().map(|s| s.to_string()));
@@ -100,10 +107,14 @@ pub fn parse_stream(text: &str) -> Stream {
                 s.assistant_messages += 1;
                 for block in v["message"]["content"].as_array().into_iter().flatten() {
                     match block["type"].as_str() {
-                        Some("text") => s.transcript.push(format!("Claude : {}", block["text"].as_str().unwrap_or("").trim())),
-                        Some("tool_use") => {
-                            s.transcript.push(format!("→ {} {}", block["name"].as_str().unwrap_or("?"), short(&block["input"], 160)))
+                        Some("text") => {
+                            s.transcript.push(format!("Claude : {}", block["text"].as_str().unwrap_or("").trim()))
                         }
+                        Some("tool_use") => s.transcript.push(format!(
+                            "→ {} {}",
+                            block["name"].as_str().unwrap_or("?"),
+                            short(&block["input"], 160)
+                        )),
                         _ => {}
                     }
                 }
@@ -162,7 +173,15 @@ pub fn remove_worktree(repo: &Path, wt: &Path) -> Result<(), String> {
     git(repo, &["worktree", "remove", "--force", &wt.to_string_lossy()]).map(|_| ())
 }
 
-pub fn run_claude(_task_id: &str, task: &Task, ctx: &Context, journal: &Path, stop: &AtomicBool, data_dir: &Path, run_id: &str) -> Outcome {
+pub fn run_claude(
+    _task_id: &str,
+    task: &Task,
+    ctx: &Context,
+    journal: &Path,
+    stop: &AtomicBool,
+    data_dir: &Path,
+    run_id: &str,
+) -> Outcome {
     let Some(c) = &task.action.claude else { return Outcome::impossible("La tâche n'a pas de session Claude.") };
     let run_dir = journal.parent().map(Path::to_path_buf).unwrap_or_default();
     log(journal, &format!("[patronus] {} — {}", task.nom, ctx.trigger));
@@ -173,7 +192,15 @@ pub fn run_claude(_task_id: &str, task: &Task, ctx: &Context, journal: &Path, st
             let dest = data_dir.join("worktrees").join(run_id);
             match create_worktree(repo, &wt.branche, &dest) {
                 Ok(base) => {
-                    log(journal, &format!("[patronus] worktree {} sur {} ({})", dest.display(), wt.branche, &base[..base.len().min(10)]));
+                    log(
+                        journal,
+                        &format!(
+                            "[patronus] worktree {} sur {} ({})",
+                            dest.display(),
+                            wt.branche,
+                            &base[..base.len().min(10)]
+                        ),
+                    );
                     worktree = Some((repo.clone(), dest.clone(), base));
                     dest
                 }
@@ -205,8 +232,12 @@ pub fn run_claude(_task_id: &str, task: &Task, ctx: &Context, journal: &Path, st
     let mut check = || {
         let s = parse_stream(&read_lossy(&stream_path));
         match (turns_max, budget) {
-            (_, Some(b)) if s.spent > b => Some((Status::BudgetAtteint, format!("budget de {b:.2} $ dépassé ({:.2} $)", s.spent))),
-            (Some(t), _) if s.assistant_messages > t => Some((Status::Arretee, format!("nombre de tours maximal ({t}) atteint"))),
+            (_, Some(b)) if s.spent > b => {
+                Some((Status::BudgetAtteint, format!("budget de {b:.2} $ dépassé ({:.2} $)", s.spent)))
+            }
+            (Some(t), _) if s.assistant_messages > t => {
+                Some((Status::Arretee, format!("nombre de tours maximal ({t}) atteint")))
+            }
             _ => None,
         }
     };
@@ -223,13 +254,19 @@ pub fn run_claude(_task_id: &str, task: &Task, ctx: &Context, journal: &Path, st
         status = Status::BudgetAtteint;
         summary = format!("Arrêtée : budget de {:.2} $ atteint.\n{summary}", c.budget_usd.unwrap_or(0.0));
     }
-    let turns_hit = turns_max.is_some_and(|t| stream.assistant_messages > t) && status == Status::Arretee && !stop.load(std::sync::atomic::Ordering::Relaxed);
+    let turns_hit = turns_max.is_some_and(|t| stream.assistant_messages > t)
+        && status == Status::Arretee
+        && !stop.load(std::sync::atomic::Ordering::Relaxed);
     if turns_hit {
         summary = format!("Arrêtée : nombre de tours maximal ({}) atteint.\n{summary}", turns_max.unwrap_or(0));
     }
     match status {
-        Status::Impossible => summary = format!("Claude Code n'a pas pu être lancé ({}) : voir le journal.", claude_exe().display()),
-        Status::DureeDepassee => summary = format!("Arrêtée : durée maximale ({} min) dépassée.\n{summary}", task.garde_fous.duree_max_min),
+        Status::Impossible => {
+            summary = format!("Claude Code n'a pas pu être lancé ({}) : voir le journal.", claude_exe().display())
+        }
+        Status::DureeDepassee => {
+            summary = format!("Arrêtée : durée maximale ({} min) dépassée.\n{summary}", task.garde_fous.duree_max_min)
+        }
         Status::Arretee if !turns_hit => summary = format!("Arrêtée à la main.\n{summary}"),
         Status::Echouee if summary.is_empty() => {
             summary = format!("Échec (code {}).", code.map_or("inconnu".into(), |c| c.to_string()));
@@ -260,7 +297,8 @@ pub fn run_claude(_task_id: &str, task: &Task, ctx: &Context, journal: &Path, st
             }
         }
     }
-    let mut out = Outcome { status, code, summary: summary.trim().to_string(), cost: stream.cost, worktree: kept, session: None };
+    let mut out =
+        Outcome { status, code, summary: summary.trim().to_string(), cost: stream.cost, worktree: kept, session: None };
     if let Some(id) = stream.session_id {
         log(journal, &format!("[patronus] session Claude : {id}"));
         out.session = Some(id);
@@ -276,7 +314,8 @@ mod tests {
     fn claude_task() -> Task {
         let mut t = Task::new_script("Revue contoso");
         t.action.script = None;
-        t.action.claude = Some(ClaudeAction { consigne: "Relis le code.".into(), budget_usd: Some(0.5), ..Default::default() });
+        t.action.claude =
+            Some(ClaudeAction { consigne: "Relis le code.".into(), budget_usd: Some(0.5), ..Default::default() });
         t
     }
 

@@ -64,7 +64,6 @@ fn adler32(data: &[u8]) -> u32 {
     (b << 16) | a
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

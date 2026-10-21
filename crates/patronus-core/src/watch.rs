@@ -6,7 +6,9 @@ use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer, notify::RecommendedWatcher, notify::RecursiveMode};
+use notify_debouncer_mini::{
+    DebounceEventResult, Debouncer, new_debouncer, notify::RecommendedWatcher, notify::RecursiveMode,
+};
 
 use crate::task::FileWatch;
 
@@ -27,10 +29,10 @@ fn build(patterns: &[String]) -> GlobSet {
         if let Ok(g) = Glob::new(p) {
             b.add(g);
         }
-        if !p.contains('/') {
-            if let Ok(g) = Glob::new(&format!("**/{p}")) {
-                b.add(g);
-            }
+        if !p.contains('/')
+            && let Ok(g) = Glob::new(&format!("**/{p}"))
+        {
+            b.add(g);
         }
     }
     b.build().unwrap_or_else(|_| GlobSet::empty())

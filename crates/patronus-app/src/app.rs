@@ -39,7 +39,8 @@ impl Editor {
     fn built(&self) -> Task {
         let mut t = self.task.clone();
         if let Some(c) = &mut t.action.claude {
-            c.outils = self.tools.split([',', '\n']).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect();
+            c.outils =
+                self.tools.split([',', '\n']).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect();
         }
         t
     }
@@ -222,7 +223,11 @@ impl App {
             }
             Command::Settings => self.show_settings = !self.show_settings,
             Command::NextUnread => {
-                let next = self.visible_runs().into_iter().find(|r| !r.lu && r.statut != Status::EnCours).map(|r| r.id.clone());
+                let next = self
+                    .visible_runs()
+                    .into_iter()
+                    .find(|r| !r.lu && r.statut != Status::EnCours)
+                    .map(|r| r.id.clone());
                 match next {
                     Some(id) => self.apply(Act::SelectRun(id)),
                     None => self.toast("Aucun résultat non lu.", self.palette.text_dim),
@@ -276,7 +281,10 @@ impl App {
             }
             // Une touche sans modificateur sert d'abord à la saisie, sauf les touches de fonction.
             let typing = ctx.memory(|m| m.focused().is_some());
-            let plain = !mods.ctrl && !mods.command && !mods.alt && !matches!(key, Key::F1 | Key::F2 | Key::F3 | Key::F4 | Key::F5 | Key::F6);
+            let plain = !mods.ctrl
+                && !mods.command
+                && !mods.alt
+                && !matches!(key, Key::F1 | Key::F2 | Key::F3 | Key::F4 | Key::F5 | Key::F6);
             if typing && plain {
                 continue;
             }
@@ -294,8 +302,16 @@ impl App {
             ui.label(RichText::new("Patronus").strong().color(p.accent));
             ui.separator();
             let unread = self.engine.unread_count();
-            let inbox = if unread > 0 { format!("Boîte de résultats ({unread})") } else { "Boîte de résultats".to_string() };
-            if ui.selectable_label(self.view == View::Inbox, inbox).on_hover_text(self.shortcuts.text(Command::Inbox)).clicked() {
+            let inbox = if unread > 0 {
+                format!("Boîte de résultats ({unread})")
+            } else {
+                "Boîte de résultats".to_string()
+            };
+            if ui
+                .selectable_label(self.view == View::Inbox, inbox)
+                .on_hover_text(self.shortcuts.text(Command::Inbox))
+                .clicked()
+            {
                 self.acts.push(Act::Inbox);
             }
             if ui.button("+ Nouvelle tâche").on_hover_text(self.shortcuts.text(Command::NewTask)).clicked() {
@@ -333,10 +349,16 @@ impl App {
                 .engine
                 .loaded
                 .iter()
-                .filter_map(|l| self.engine.next_run(&l.id).map(|at| (at, l.task.as_ref().map(|t| t.nom.clone()).unwrap_or_default())))
+                .filter_map(|l| {
+                    self.engine
+                        .next_run(&l.id)
+                        .map(|at| (at, l.task.as_ref().map(|t| t.nom.clone()).unwrap_or_default()))
+                })
                 .min_by_key(|(at, _)| *at);
             match next {
-                Some((at, nom)) => ui.label(RichText::new(format!("Prochaine : {nom}, {}", fmt_when(at))).color(p.text_dim)),
+                Some((at, nom)) => {
+                    ui.label(RichText::new(format!("Prochaine : {nom}, {}", fmt_when(at))).color(p.text_dim))
+                }
                 None => ui.label(RichText::new("Aucune échéance planifiée").color(p.text_dim)),
             };
             let n = self.engine.problems.len();
@@ -376,10 +398,11 @@ impl App {
             for l in &self.engine.loaded {
                 let id = &l.id;
                 let selected = self.selected_task.as_deref() == Some(id.as_str());
-                let frame = egui::Frame::new()
-                    .inner_margin(6.0)
-                    .corner_radius(4.0)
-                    .fill(if selected { p.selection } else { Color32::TRANSPARENT });
+                let frame = egui::Frame::new().inner_margin(6.0).corner_radius(4.0).fill(if selected {
+                    p.selection
+                } else {
+                    Color32::TRANSPARENT
+                });
                 let resp = frame
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
@@ -415,15 +438,24 @@ impl App {
                                     ui.label(RichText::new(format!("⚠ {}", problems[0])).color(p.warn).small());
                                 }
                                 let triggers: Vec<String> = task.declencheurs.iter().map(describe).collect();
-                                let triggers = if triggers.is_empty() { "à la main".to_string() } else { triggers.join(" ; ") };
+                                let triggers =
+                                    if triggers.is_empty() { "à la main".to_string() } else { triggers.join(" ; ") };
                                 ui.label(RichText::new(triggers).small().color(p.text_dim));
                                 ui.horizontal(|ui| {
                                     if let Some(r) = self.engine.last_run(id) {
                                         dot(ui, p.status(r.statut), 3.5);
-                                        ui.label(RichText::new(format!("{} {}", r.statut.label(), fmt_when(r.debut))).small().color(p.text_dim));
+                                        ui.label(
+                                            RichText::new(format!("{} {}", r.statut.label(), fmt_when(r.debut)))
+                                                .small()
+                                                .color(p.text_dim),
+                                        );
                                     }
                                     if let Some(at) = self.engine.next_run(id) {
-                                        ui.label(RichText::new(format!("· prochaine {}", fmt_when(at))).small().color(p.text_dim));
+                                        ui.label(
+                                            RichText::new(format!("· prochaine {}", fmt_when(at)))
+                                                .small()
+                                                .color(p.text_dim),
+                                        );
                                     }
                                     if self.engine.is_pending(id) {
                                         ui.label(RichText::new("· relance en attente").small().color(p.warn));
@@ -472,7 +504,10 @@ impl App {
             ui.separator();
             let runs: Vec<Run> = self.visible_runs().into_iter().cloned().collect();
             if runs.is_empty() {
-                ui.label(RichText::new("Rien pour l'instant. Lancez une tâche (▶) ou attendez son échéance.").color(p.text_dim));
+                ui.label(
+                    RichText::new("Rien pour l'instant. Lancez une tâche (▶) ou attendez son échéance.")
+                        .color(p.text_dim),
+                );
             }
             ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 for r in &runs {
@@ -495,7 +530,11 @@ impl App {
                                     ui.label(RichText::new(fmt_when(r.debut)).small().color(p.text_dim));
                                 });
                             });
-                            ui.label(RichText::new(format!("{} · {}", r.statut.label(), r.declencheur)).small().color(p.status(r.statut)));
+                            ui.label(
+                                RichText::new(format!("{} · {}", r.statut.label(), r.declencheur))
+                                    .small()
+                                    .color(p.status(r.statut)),
+                            );
                             let first = r.resume.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
                             if !first.is_empty() {
                                 ui.add(egui::Label::new(RichText::new(first).small().color(p.text_dim)).truncate());
@@ -514,7 +553,9 @@ impl App {
             match run {
                 None => {
                     ui.add_space(40.0);
-                    ui.vertical_centered(|ui| ui.label(RichText::new("Choisissez un résultat à gauche.").color(p.text_dim)));
+                    ui.vertical_centered(|ui| {
+                        ui.label(RichText::new("Choisissez un résultat à gauche.").color(p.text_dim))
+                    });
                 }
                 Some(r) => self.run_detail(ui, &r),
             }
@@ -558,10 +599,10 @@ impl App {
             if ui.button("Ouvrir le dossier").on_hover_text("Journal et fichiers de l'exécution").clicked() {
                 open_path(&self.engine.store.run_dir(&r.id));
             }
-            if let Some(wt) = &r.worktree {
-                if ui.button("Ouvrir le worktree").on_hover_text(wt.display().to_string()).clicked() {
-                    open_path(wt);
-                }
+            if let Some(wt) = &r.worktree
+                && ui.button("Ouvrir le worktree").on_hover_text(wt.display().to_string()).clicked()
+            {
+                open_path(wt);
             }
             if ui.button("Modifier la tâche").clicked() {
                 self.acts.push(Act::Edit(r.tache.clone()));
@@ -851,16 +892,14 @@ impl App {
                 Err(e) => ed.error = Some(format!("Enregistrement impossible : {e}")),
             }
         }
-        if delete {
-            if let Some(id) = ed.id.clone() {
-                match self.engine.delete_task(&id, t) {
-                    Ok(()) => {
-                        keep = false;
-                        self.selected_task = self.engine.loaded.first().map(|l| l.id.clone());
-                        self.toast("Tâche supprimée (fichier mis de côté).", p.warn);
-                    }
-                    Err(e) => ed.error = Some(format!("Suppression impossible : {e}")),
+        if delete && let Some(id) = ed.id.clone() {
+            match self.engine.delete_task(&id, t) {
+                Ok(()) => {
+                    keep = false;
+                    self.selected_task = self.engine.loaded.first().map(|l| l.id.clone());
+                    self.toast("Tâche supprimée (fichier mis de côté).", p.warn);
                 }
+                Err(e) => ed.error = Some(format!("Suppression impossible : {e}")),
             }
         }
         if keep {
@@ -883,7 +922,9 @@ impl App {
                 });
                 ui.end_row();
                 ui.label("Conserver les résultats lus");
-                changed |= ui.add(egui::DragValue::new(&mut self.state.retention_jours).range(1..=3650).suffix(" jours")).changed();
+                changed |= ui
+                    .add(egui::DragValue::new(&mut self.state.retention_jours).range(1..=3650).suffix(" jours"))
+                    .changed();
                 ui.end_row();
                 ui.label("Notifications");
                 changed |= ui.checkbox(&mut self.state.notifications, "à la fin d'une exécution").changed();
@@ -915,7 +956,11 @@ impl App {
                         let conflicts = self.shortcuts.conflicts(c);
                         if !conflicts.is_empty() {
                             let names: Vec<_> = conflicts.iter().map(|o| o.label()).collect();
-                            ui.label(RichText::new(format!("⚠ aussi : {}", names.join(", "))).color(self.palette.warn).small());
+                            ui.label(
+                                RichText::new(format!("⚠ aussi : {}", names.join(", ")))
+                                    .color(self.palette.warn)
+                                    .small(),
+                            );
                         }
                     });
                     ui.end_row();
@@ -977,14 +1022,21 @@ impl App {
             }
         }
         let q = self.palette_query.to_lowercase();
-        let matching: Vec<&(String, Entry)> = entries.iter().filter(|(label, _)| q.split_whitespace().all(|w| label.to_lowercase().contains(w))).collect();
+        let matching: Vec<&(String, Entry)> = entries
+            .iter()
+            .filter(|(label, _)| q.split_whitespace().all(|w| label.to_lowercase().contains(w)))
+            .collect();
         let mut chosen = None;
         egui::Window::new("Palette")
             .title_bar(false)
             .anchor(egui::Align2::CENTER_TOP, [0.0, 60.0])
             .fixed_size([460.0, 0.0])
             .show(ctx, |ui| {
-                let resp = ui.add(TextEdit::singleline(&mut self.palette_query).hint_text("Commande ou tâche…").desired_width(f32::INFINITY));
+                let resp = ui.add(
+                    TextEdit::singleline(&mut self.palette_query)
+                        .hint_text("Commande ou tâche…")
+                        .desired_width(f32::INFINITY),
+                );
                 resp.request_focus();
                 let enter = ui.input(|i| i.key_pressed(Key::Enter));
                 for (i, (label, _)) in matching.iter().enumerate().take(12) {
@@ -1013,14 +1065,17 @@ impl App {
         if self.toasts.is_empty() {
             return;
         }
-        egui::Area::new(egui::Id::unique("patronus-toasts")).anchor(egui::Align2::RIGHT_BOTTOM, [-16.0, -36.0]).show(ctx, |ui| {
-            for t in &self.toasts {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.set_max_width(360.0);
-                    ui.label(RichText::new(&t.text).color(t.color));
-                });
-            }
-        });
+        egui::Area::new(egui::Id::unique("patronus-toasts")).anchor(egui::Align2::RIGHT_BOTTOM, [-16.0, -36.0]).show(
+            ctx,
+            |ui| {
+                for t in &self.toasts {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.set_max_width(360.0);
+                        ui.label(RichText::new(&t.text).color(t.color));
+                    });
+                }
+            },
+        );
         ctx.request_repaint_after(Duration::from_millis(500));
     }
 
@@ -1077,7 +1132,11 @@ impl eframe::App for App {
             ui.add_space(2.0);
         });
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
-        egui::Panel::left("tasks").resizable(true).default_size(330.0).min_size(240.0).show(ui, |ui| self.task_list(ui));
+        egui::Panel::left("tasks")
+            .resizable(true)
+            .default_size(330.0)
+            .min_size(240.0)
+            .show(ui, |ui| self.task_list(ui));
         egui::CentralPanel::default().show(ui, |ui| match self.view {
             View::Inbox => self.inbox(ui),
             View::Editor => self.editor_view(ui),

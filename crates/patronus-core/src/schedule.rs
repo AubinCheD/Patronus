@@ -12,7 +12,8 @@ pub fn next_after(trigger: &Trigger, t: NaiveDateTime) -> Option<NaiveDateTime> 
             let (h, m) = parse_heure(heure)?;
             let time = NaiveTime::from_hms_opt(h, m, 0)?;
             (0..=7).map(|d| t.date() + Duration::days(d)).find_map(|date| {
-                let day_ok = jours.is_empty() || jours.iter().any(|j| j.index() == date.weekday().num_days_from_monday());
+                let day_ok =
+                    jours.is_empty() || jours.iter().any(|j| j.index() == date.weekday().num_days_from_monday());
                 let at = date.and_time(time);
                 (day_ok && at > t).then_some(at)
             })

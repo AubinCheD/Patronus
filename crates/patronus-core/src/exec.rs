@@ -32,7 +32,14 @@ pub struct Outcome {
 
 impl Outcome {
     pub fn impossible(why: impl Into<String>) -> Outcome {
-        Outcome { status: Status::Impossible, code: None, summary: why.into(), cost: None, worktree: None, session: None }
+        Outcome {
+            status: Status::Impossible,
+            code: None,
+            summary: why.into(),
+            cost: None,
+            worktree: None,
+            session: None,
+        }
     }
 }
 
@@ -212,12 +219,16 @@ pub fn run_script(task_id: &str, task: &Task, ctx: &Context, journal: &Path, sto
         };
     }
     match status {
-        Status::Echouee => summary = format!("Code de retour {}.\n{summary}", code.map_or("inconnu".into(), |c| c.to_string())),
+        Status::Echouee => {
+            summary = format!("Code de retour {}.\n{summary}", code.map_or("inconnu".into(), |c| c.to_string()))
+        }
         Status::DureeDepassee => {
             summary = format!("Arrêtée : durée maximale ({} min) dépassée.\n{summary}", task.garde_fous.duree_max_min)
         }
         Status::Arretee => summary = format!("Arrêtée à la main.\n{summary}"),
-        Status::Impossible if summary.is_empty() => summary = "Le shell n'a pas pu être lancé (voir le journal).".into(),
+        Status::Impossible if summary.is_empty() => {
+            summary = "Le shell n'a pas pu être lancé (voir le journal).".into()
+        }
         _ => {}
     }
     Outcome { status, code, summary: summary.trim().to_string(), cost: None, worktree: None, session: None }
@@ -230,7 +241,12 @@ mod tests {
 
     fn script_task(shell: Shell, commande: &str, dir: &Path) -> Task {
         let mut t = Task::new_script("Essai");
-        t.action.script = Some(Script { commande: commande.into(), shell, dossier: Some(dir.to_path_buf()), env: Default::default() });
+        t.action.script = Some(Script {
+            commande: commande.into(),
+            shell,
+            dossier: Some(dir.to_path_buf()),
+            env: Default::default(),
+        });
         t
     }
 

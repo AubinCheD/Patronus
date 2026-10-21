@@ -26,10 +26,10 @@ pub fn run(data_dir: std::path::PathBuf) -> eframe::Result {
         APP_TITLE,
         options,
         Box::new(move |cc| {
-            if let Ok(h) = cc.window_handle() {
-                if let RawWindowHandle::Win32(w) = h.as_raw() {
-                    notify::init(w.hwnd.get());
-                }
+            if let Ok(h) = cc.window_handle()
+                && let RawWindowHandle::Win32(w) = h.as_raw()
+            {
+                notify::init(w.hwnd.get());
             }
             Ok(Box::new(app::App::new(cc, data_dir, st, problems)))
         }),

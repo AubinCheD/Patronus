@@ -243,7 +243,9 @@ impl Task {
         }
         match (&self.action.script, &self.action.claude) {
             (None, None) => out.push("Aucune action : choisir un script ou une session Claude.".into()),
-            (Some(_), Some(_)) => out.push("Deux actions : une tâche fait un script ou une session Claude, pas les deux.".into()),
+            (Some(_), Some(_)) => {
+                out.push("Deux actions : une tâche fait un script ou une session Claude, pas les deux.".into())
+            }
             (Some(s), None) => {
                 if s.commande.trim().is_empty() {
                     out.push("La commande du script est vide.".into());
@@ -265,7 +267,7 @@ impl Task {
                 }
                 match c.budget_usd {
                     None => out.push("Une session Claude demande un budget (en dollars, équivalent API).".into()),
-                    Some(b) if !(b > 0.0) => out.push("Le budget doit être positif.".into()),
+                    Some(b) if b.is_nan() || b <= 0.0 => out.push("Le budget doit être positif.".into()),
                     _ => {}
                 }
                 if c.tours_max == Some(0) {
@@ -432,7 +434,9 @@ mod tests {
         assert_eq!(t.nom, "Revue des dépendances");
         assert!(t.active);
         assert_eq!(t.declencheurs.len(), 1);
-        assert!(matches!(&t.declencheurs[0], Trigger::Heure { heure, jours, .. } if heure == "08:00" && jours.len() == 5));
+        assert!(
+            matches!(&t.declencheurs[0], Trigger::Heure { heure, jours, .. } if heure == "08:00" && jours.len() == 5)
+        );
         assert_eq!(t.action.worktree.as_ref().unwrap().branche, "main");
         assert_eq!(t.garde_fous.duree_max_min, 30);
         assert!(t.validate().is_empty(), "{:?}", t.validate());
@@ -446,7 +450,11 @@ mod tests {
             Trigger::Heure { heure: "09:30".into(), jours: vec![Jour::Lun], rattrapage: true },
             Trigger::Intervalle { toutes_les_minutes: 15 },
             Trigger::Fichiers {
-                fichiers: FileWatch { dossier: "C:\\dev\\fabrikam".into(), inclure: vec!["docs/**".into()], exclure: vec![] },
+                fichiers: FileWatch {
+                    dossier: "C:\\dev\\fabrikam".into(),
+                    inclure: vec!["docs/**".into()],
+                    exclure: vec![],
+                },
             },
         ];
         let json = serde_json::to_string(&t).unwrap();
@@ -468,10 +476,19 @@ mod tests {
         t.declencheurs = vec![
             Trigger::Heure { heure: "25:00".into(), jours: vec![], rattrapage: false },
             Trigger::Intervalle { toutes_les_minutes: 0 },
-            Trigger::Fichiers { fichiers: FileWatch { dossier: "".into(), inclure: vec!["[".into()], exclure: vec![] } },
+            Trigger::Fichiers {
+                fichiers: FileWatch { dossier: "".into(), inclure: vec!["[".into()], exclure: vec![] },
+            },
         ];
         let p = t.validate().join("\n");
-        for needle in ["pas de nom", "commande du script est vide", "25:00", "au moins une minute", "dossier surveillé", "Motif illisible"] {
+        for needle in [
+            "pas de nom",
+            "commande du script est vide",
+            "25:00",
+            "au moins une minute",
+            "dossier surveillé",
+            "Motif illisible",
+        ] {
             assert!(p.contains(needle), "« {needle} » absent de :\n{p}");
         }
         t.action.claude = Some(ClaudeAction::default());
@@ -481,7 +498,8 @@ mod tests {
     #[test]
     fn secrets_are_refused() {
         let mut t = Task::new_script("x");
-        t.action.script.as_mut().unwrap().commande = "curl -H 'Authorization: ghp_abcdefghijklmnop1234' https://contoso.com".into();
+        t.action.script.as_mut().unwrap().commande =
+            "curl -H 'Authorization: ghp_abcdefghijklmnop1234' https://contoso.com".into();
         assert!(t.validate().join(" ").contains("secret"));
         assert!(looks_like_secret("password=hunter2"));
         assert!(!looks_like_secret("npm outdated"));
@@ -513,7 +531,8 @@ mod tests {
         store.save(&id, &t).unwrap();
         assert_eq!(store.free_id(&t.nom), "point-du-matin-2");
         fs::write(dir.join("casse.json"), "{ pas du json").unwrap();
-        fs::write(dir.join("bom.json"), "\u{feff}{\"nom\":\"b\",\"action\":{\"script\":{\"commande\":\"dir\"}}}").unwrap();
+        fs::write(dir.join("bom.json"), "\u{feff}{\"nom\":\"b\",\"action\":{\"script\":{\"commande\":\"dir\"}}}")
+            .unwrap();
         let all = store.load_all();
         assert_eq!(all.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(), ["bom", "casse", "point-du-matin"]);
         assert!(all[0].task.is_ok());
@@ -528,7 +547,8 @@ mod tests {
     fn unknown_trigger_is_explained() {
         let dir = test_dir("trigger");
         let p = dir.join("t.json");
-        fs::write(&p, r#"{"nom":"x","declencheurs":[{"lune":"pleine"}],"action":{"script":{"commande":"dir"}}}"#).unwrap();
+        fs::write(&p, r#"{"nom":"x","declencheurs":[{"lune":"pleine"}],"action":{"script":{"commande":"dir"}}}"#)
+            .unwrap();
         assert!(read_task(&p).unwrap_err().contains("déclencheur inconnu"));
     }
 }

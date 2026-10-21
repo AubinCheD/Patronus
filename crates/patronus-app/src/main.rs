@@ -29,7 +29,9 @@ fn single_instance(data_dir: &std::path::Path) -> bool {
 fn run_cli(data_dir: &std::path::Path, task_id: &str) -> std::process::ExitCode {
     use patronus_core::{engine::Engine, exec::Context, run::now};
     // Exécutable sans console en version finale : on reprend celle du terminal appelant.
-    unsafe { windows_sys::Win32::System::Console::AttachConsole(windows_sys::Win32::System::Console::ATTACH_PARENT_PROCESS) };
+    unsafe {
+        windows_sys::Win32::System::Console::AttachConsole(windows_sys::Win32::System::Console::ATTACH_PARENT_PROCESS)
+    };
     let mut engine = Engine::open(data_dir, now());
     if engine.task(task_id).is_none() {
         let known: Vec<_> = engine.loaded.iter().map(|l| l.id.as_str()).collect();

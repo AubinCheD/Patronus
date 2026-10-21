@@ -15,8 +15,13 @@ fn marker(prompt: &str, name: &str) -> Option<String> {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let prompt = args.iter().position(|a| a == "-p").and_then(|i| args.get(i + 1)).cloned().unwrap_or_default();
-    let tools: Vec<String> =
-        args.iter().skip_while(|a| *a != "--allowedTools").skip(1).take_while(|a| !a.starts_with("--")).cloned().collect();
+    let tools: Vec<String> = args
+        .iter()
+        .skip_while(|a| *a != "--allowedTools")
+        .skip(1)
+        .take_while(|a| !a.starts_with("--"))
+        .cloned()
+        .collect();
     let out = std::io::stdout();
     let mut out = out.lock();
     let mut emit = |v: serde_json::Value| {

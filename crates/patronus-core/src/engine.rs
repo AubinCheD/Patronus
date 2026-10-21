@@ -132,7 +132,8 @@ impl Engine {
                 }
             }
         }
-        let dirs: BTreeSet<PathBuf> = self.matchers.iter().map(|(_, m)| m.dossier().to_path_buf()).filter(|d| d.is_dir()).collect();
+        let dirs: BTreeSet<PathBuf> =
+            self.matchers.iter().map(|(_, m)| m.dossier().to_path_buf()).filter(|d| d.is_dir()).collect();
         if dirs != self.watched {
             self.watcher = None;
             if !dirs.is_empty() {
@@ -213,12 +214,17 @@ impl Engine {
             Ok(t) => t.nom.clone(),
             Err(_) => task_id.to_string(),
         });
-        let mut run = Run::new(self.store.new_id(task_id, now), task_id, name.as_deref().unwrap_or(task_id), &ctx.trigger, now);
+        let mut run =
+            Run::new(self.store.new_id(task_id, now), task_id, name.as_deref().unwrap_or(task_id), &ctx.trigger, now);
         let task = match self.task(task_id) {
             None => Err(format!("Tâche introuvable ou illisible : {task_id}.")),
             Some(t) => {
                 let problems = t.validate();
-                if problems.is_empty() { Ok(t.clone()) } else { Err(format!("Tâche invalide : {}", problems.join(" "))) }
+                if problems.is_empty() {
+                    Ok(t.clone())
+                } else {
+                    Err(format!("Tâche invalide : {}", problems.join(" ")))
+                }
             }
         };
         let task = match task {
@@ -245,7 +251,9 @@ impl Engine {
         std::thread::spawn(move || {
             let outcome = match &executor {
                 Some(f) => f(&tid, &task, &ctx, &journal, &stop),
-                None if task.action.claude.is_some() => crate::claude::run_claude(&tid, &task, &ctx, &journal, &stop, &data_dir, &rid),
+                None if task.action.claude.is_some() => {
+                    crate::claude::run_claude(&tid, &task, &ctx, &journal, &stop, &data_dir, &rid)
+                }
                 None => run_script(&tid, &task, &ctx, &journal, &stop),
             };
             let _ = tx.send((tid, rid, outcome));
@@ -318,17 +326,34 @@ impl Engine {
             let hits: Vec<(String, Vec<PathBuf>)> = self
                 .matchers
                 .iter()
-                .map(|(id, m)| (id.clone(), changed_files.iter().filter(|p| m.matches(p) && !p.starts_with(&self.data_dir)).cloned().collect::<Vec<_>>()))
+                .map(|(id, m)| {
+                    (
+                        id.clone(),
+                        changed_files
+                            .iter()
+                            .filter(|p| m.matches(p) && !p.starts_with(&self.data_dir))
+                            .cloned()
+                            .collect::<Vec<_>>(),
+                    )
+                })
                 .filter(|(_, files)| !files.is_empty())
                 .collect();
             for (id, files) in hits {
                 // Une tâche qui écrit dans le dossier qu'elle surveille se relancerait sans fin :
                 // ce qu'elle modifie pendant qu'elle tourne ne la redéclenche pas.
                 if let Some(run_id) = self.running_run_id(&id) {
-                    log(&self.store.journal_path(run_id), &format!("[patronus] {} fichier(s) modifié(s) pendant l'exécution, ignoré(s)", files.len()));
+                    log(
+                        &self.store.journal_path(run_id),
+                        &format!("[patronus] {} fichier(s) modifié(s) pendant l'exécution, ignoré(s)", files.len()),
+                    );
                     continue;
                 }
-                let base = self.matchers.iter().find(|(tid, _)| *tid == id).map(|(_, m)| m.dossier().to_path_buf()).unwrap_or_default();
+                let base = self
+                    .matchers
+                    .iter()
+                    .find(|(tid, _)| *tid == id)
+                    .map(|(_, m)| m.dossier().to_path_buf())
+                    .unwrap_or_default();
                 let trigger = match files.as_slice() {
                     [one] => format!("fichier modifié : {}", one.strip_prefix(&base).unwrap_or(one).display()),
                     many => format!("{} fichiers modifiés", many.len()),
@@ -398,11 +423,20 @@ impl Engine {
                 }
                 let latest = missed.iter().map(|m| m.at).max().unwrap_or(now);
                 let count: usize = missed.iter().map(|m| m.count).sum();
-                let mut run = Run::new(self.store.new_id(&id, now), &id, &task.nom, &format!("échéance de {}", latest.format("%d/%m %H:%M")), latest);
+                let mut run = Run::new(
+                    self.store.new_id(&id, now),
+                    &id,
+                    &task.nom,
+                    &format!("échéance de {}", latest.format("%d/%m %H:%M")),
+                    latest,
+                );
                 run.statut = Status::Manquee;
                 run.fin = Some(latest);
                 run.resume = if count > 1 {
-                    format!("{count} départs manqués pendant que Patronus était fermé, le dernier le {}.", latest.format("%d/%m à %H:%M"))
+                    format!(
+                        "{count} départs manqués pendant que Patronus était fermé, le dernier le {}.",
+                        latest.format("%d/%m à %H:%M")
+                    )
                 } else {
                     format!("Départ du {} manqué : Patronus était fermé.", latest.format("%d/%m à %H:%M"))
                 };
@@ -455,7 +489,8 @@ mod tests {
 
     fn task(cmd: &str, triggers: Vec<Trigger>) -> Task {
         let mut t = Task::new_script("Essai northwind");
-        t.action.script = Some(Script { commande: cmd.into(), shell: Shell::Cmd, dossier: None, env: Default::default() });
+        t.action.script =
+            Some(Script { commande: cmd.into(), shell: Shell::Cmd, dossier: None, env: Default::default() });
         t.declencheurs = triggers;
         t
     }
@@ -470,11 +505,25 @@ mod tests {
             let start = Instant::now();
             while start.elapsed() < hold {
                 if stop.load(Ordering::Relaxed) {
-                    return Outcome { status: Status::Arretee, code: None, summary: "arrêtée".into(), cost: None, worktree: None, session: None };
+                    return Outcome {
+                        status: Status::Arretee,
+                        code: None,
+                        summary: "arrêtée".into(),
+                        cost: None,
+                        worktree: None,
+                        session: None,
+                    };
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
-            Outcome { status: Status::Reussie, code: Some(0), summary: format!("ok : {}", ctx.trigger), cost: None, worktree: None, session: None }
+            Outcome {
+                status: Status::Reussie,
+                code: Some(0),
+                summary: format!("ok : {}", ctx.trigger),
+                cost: None,
+                worktree: None,
+                session: None,
+            }
         });
         (f, counter)
     }
@@ -527,7 +576,13 @@ mod tests {
         let dir = test_dir("engine-due");
         let (exec, counter) = fake(Duration::ZERO);
         let mut e = Engine::open_with(&dir, at(21, 7, 58), Some(exec), Duration::from_millis(200));
-        let id = e.save_task(None, &task("x", vec![Trigger::Heure { heure: "08:00".into(), jours: vec![], rattrapage: false }]), at(21, 7, 58)).unwrap();
+        let id = e
+            .save_task(
+                None,
+                &task("x", vec![Trigger::Heure { heure: "08:00".into(), jours: vec![], rattrapage: false }]),
+                at(21, 7, 58),
+            )
+            .unwrap();
         assert_eq!(e.next_run(&id), Some(at(21, 8, 0)));
         e.tick(at(21, 7, 59));
         assert!(counter.all().is_empty());
@@ -588,8 +643,18 @@ mod tests {
         let dir = test_dir("engine-missed");
         let (exec, counter) = fake(Duration::ZERO);
         let mut e = Engine::open_with(&dir, at(20, 18, 0), Some(exec.clone()), Duration::from_millis(200));
-        e.save_task(Some("signale"), &task("x", vec![Trigger::Heure { heure: "08:00".into(), jours: vec![], rattrapage: false }]), at(20, 18, 0)).unwrap();
-        e.save_task(Some("rattrape"), &task("x", vec![Trigger::Heure { heure: "09:00".into(), jours: vec![], rattrapage: true }]), at(20, 18, 0)).unwrap();
+        e.save_task(
+            Some("signale"),
+            &task("x", vec![Trigger::Heure { heure: "08:00".into(), jours: vec![], rattrapage: false }]),
+            at(20, 18, 0),
+        )
+        .unwrap();
+        e.save_task(
+            Some("rattrape"),
+            &task("x", vec![Trigger::Heure { heure: "09:00".into(), jours: vec![], rattrapage: true }]),
+            at(20, 18, 0),
+        )
+        .unwrap();
         e.shutdown(at(20, 18, 0), Duration::from_secs(1));
         drop(e);
         // Rouvert le lendemain à 10 h.

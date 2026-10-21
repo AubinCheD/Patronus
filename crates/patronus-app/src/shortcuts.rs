@@ -16,8 +16,15 @@ pub enum Command {
 }
 
 impl Command {
-    pub const ALL: [Command; 7] =
-        [Command::NewTask, Command::Inbox, Command::RunSelected, Command::StopAll, Command::Palette, Command::Settings, Command::NextUnread];
+    pub const ALL: [Command; 7] = [
+        Command::NewTask,
+        Command::Inbox,
+        Command::RunSelected,
+        Command::StopAll,
+        Command::Palette,
+        Command::Settings,
+        Command::NextUnread,
+    ];
 
     /// Clé dans `state.json` : stable, ne pas traduire.
     pub fn key(self) -> &'static str {
@@ -101,7 +108,9 @@ impl Binding {
     }
 
     fn same_mods(&self, m: Modifiers) -> bool {
-        (self.mods.ctrl || self.mods.command) == (m.ctrl || m.command) && self.mods.alt == m.alt && self.mods.shift == m.shift
+        (self.mods.ctrl || self.mods.command) == (m.ctrl || m.command)
+            && self.mods.alt == m.alt
+            && self.mods.shift == m.shift
     }
 
     pub fn matches(&self, key: Key, m: Modifiers) -> bool {
@@ -136,7 +145,11 @@ impl Shortcuts {
     /// Commandes qui partagent le raccourci de `c`.
     pub fn conflicts(&self, c: Command) -> Vec<Command> {
         let Some(b) = self.get(c) else { return Vec::new() };
-        Command::ALL.iter().copied().filter(|o| *o != c && self.get(*o).is_some_and(|ob| ob.key == b.key && ob.same_mods(b.mods))).collect()
+        Command::ALL
+            .iter()
+            .copied()
+            .filter(|o| *o != c && self.get(*o).is_some_and(|ob| ob.key == b.key && ob.same_mods(b.mods)))
+            .collect()
     }
 
     /// Enregistrement : seulement ce qui diffère des valeurs par défaut (`""` pour « aucun »).

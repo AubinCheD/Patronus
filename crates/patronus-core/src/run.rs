@@ -168,7 +168,10 @@ impl RunStore {
         let Ok(entries) = fs::read_dir(&self.dir) else { return (runs, problems) };
         for e in entries.flatten().filter(|e| e.path().is_dir()) {
             let path = e.path().join("run.json");
-            match read_text(&path).map_err(|e| e.to_string()).and_then(|t| serde_json::from_str::<Run>(&t).map_err(|e| e.to_string())) {
+            match read_text(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|t| serde_json::from_str::<Run>(&t).map_err(|e| e.to_string()))
+            {
                 Ok(mut run) => {
                     if run.statut == Status::EnCours {
                         run.statut = Status::Interrompue;

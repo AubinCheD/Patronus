@@ -46,8 +46,12 @@ fn repo(dir: &Path) -> PathBuf {
 fn task(consigne: &str, depot: &Path, worktree: bool) -> Task {
     let mut t = Task::new_script("Revue contoso");
     t.action.script = None;
-    t.action.claude =
-        Some(ClaudeAction { consigne: consigne.into(), budget_usd: Some(0.5), tours_max: Some(5), ..Default::default() });
+    t.action.claude = Some(ClaudeAction {
+        consigne: consigne.into(),
+        budget_usd: Some(0.5),
+        tours_max: Some(5),
+        ..Default::default()
+    });
     t.action.worktree = worktree.then(|| Worktree { branche: "main".into() });
     t.depot = Some(depot.to_path_buf());
     assert!(t.validate().is_empty(), "{:?}", t.validate());
@@ -146,4 +150,3 @@ fn failure_and_missing_branch_say_why() {
     assert_eq!(out.status, Status::Impossible);
     assert!(out.summary.contains("Worktree impossible"), "{}", out.summary);
 }
-
