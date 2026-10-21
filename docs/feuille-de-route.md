@@ -21,7 +21,7 @@ spécification au plan `docs/superpowers/plans/2026-10-21-passe-complete.md`. Le
 | A8 | Fenêtre, ligne de commande et autres processus sur le même dossier | fait |
 | A9 | Rétention appliquée ; worktrees nettoyés et réconciliés | fait |
 | A10 | Interface sobre ; brouillon de l'éditeur protégé | fait |
-| A11 | Chemins non ASCII, sortie de cmd, problèmes sans doublons | à faire |
+| A11 | Chemins non ASCII, sortie de cmd, problèmes sans doublons | fait |
 | A12 | Formats : champs inconnus à tous les niveaux, états de référence | à faire |
 | A13 | Échéances : veille, longues absences, tâche nouvelle, changement d'heure | à faire |
 | B1 | Symboles de l'interface : un glyphe pour chacun, vérifié | à faire |

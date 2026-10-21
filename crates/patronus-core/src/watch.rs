@@ -64,16 +64,18 @@ impl Matcher {
     }
 }
 
-/// `strip_prefix` insensible à la casse, comme les chemins Windows.
-fn strip_prefix_ci(path: &Path, base: &Path) -> Option<PathBuf> {
-    let p = path.to_string_lossy().replace('\\', "/");
-    let b = base.to_string_lossy().replace('\\', "/");
-    let b = b.trim_end_matches('/');
-    if p.len() > b.len() && p[..b.len()].eq_ignore_ascii_case(b) && p.as_bytes()[b.len()] == b'/' {
-        Some(PathBuf::from(&p[b.len() + 1..]))
-    } else {
-        None
+/// `strip_prefix` insensible à la casse, comme les chemins Windows : composant par composant (jamais
+/// au milieu d'un caractère), barres obliques dans les deux sens.
+pub fn strip_prefix_ci(path: &Path, base: &Path) -> Option<PathBuf> {
+    let norm = |c: std::path::Component| c.as_os_str().to_string_lossy().to_lowercase();
+    let mut rest = path.components();
+    for b in base.components() {
+        if norm(rest.next()?) != norm(b) {
+            return None;
+        }
     }
+    let rest: PathBuf = rest.collect();
+    (!rest.as_os_str().is_empty()).then_some(rest)
 }
 
 /// Surveillance d'un ensemble de dossiers. Les chemins modifiés arrivent par paquets, après
@@ -85,13 +87,21 @@ pub struct Watcher {
 }
 
 impl Watcher {
-    pub fn start(dirs: &BTreeSet<PathBuf>, debounce: Duration, tx: Sender<Vec<PathBuf>>) -> std::io::Result<Watcher> {
-        let mut debouncer = new_debouncer(debounce, move |res: DebounceEventResult| {
-            if let Ok(events) = res {
+    pub fn start(
+        dirs: &BTreeSet<PathBuf>,
+        debounce: Duration,
+        tx: Sender<Result<Vec<PathBuf>, String>>,
+    ) -> std::io::Result<Watcher> {
+        let mut debouncer = new_debouncer(debounce, move |res: DebounceEventResult| match res {
+            Ok(events) => {
                 let paths: Vec<PathBuf> = events.into_iter().map(|e| e.path).collect();
                 if !paths.is_empty() {
-                    let _ = tx.send(paths);
+                    let _ = tx.send(Ok(paths));
                 }
+            }
+            // Une erreur de surveillance n'est pas perdue : elle est signalée.
+            Err(e) => {
+                let _ = tx.send(Err(format!("Surveillance des fichiers : {e}")));
             }
         })
         .map_err(std::io::Error::other)?;
@@ -128,6 +138,18 @@ mod tests {
         assert!(!m.matches(Path::new(r"C:\dev\Northwind2\docs\guide.md")), "dossier voisin");
     }
 
+    /// Un chemin accentué comparé à un dossier plus court : la comparaison coupait au milieu d'un
+    /// caractère et faisait paniquer l'application (« end byte index is not a char boundary »).
+    #[test]
+    fn accented_paths_do_not_panic() {
+        let m = Matcher::new(&FileWatch { dossier: PathBuf::from(r"C:\Users\x\Documents\ab"), ..Default::default() });
+        assert!(!m.matches(Path::new(r"C:\Users\x\Documents\Réunions\cr.md")));
+        let m = Matcher::new(&FileWatch { dossier: PathBuf::from(r"C:\dev\Réunions"), ..Default::default() });
+        assert!(m.matches(Path::new(r"c:\DEV\réunions\compte-rendu.md")), "casse ignorée, accents compris");
+        assert!(m.matches(Path::new("C:/dev/Réunions/notes/été.md")), "barres obliques dans les deux sens");
+        assert!(!m.matches(Path::new(r"C:\dev\RéunionsBis\x.md")));
+    }
+
     #[test]
     fn everything_but_tooling_when_no_pattern() {
         let m = watch(&[], &[]);
@@ -147,10 +169,10 @@ mod tests {
         for i in 0..5 {
             std::fs::write(dir.join(format!("f{i}.txt")), "x").unwrap();
         }
-        let paths = rx.recv_timeout(Duration::from_secs(5)).expect("aucun changement signalé");
+        let paths = rx.recv_timeout(Duration::from_secs(5)).expect("aucun changement signalé").unwrap();
         assert!(paths.iter().any(|p| p.ends_with("f0.txt")));
         let mut all = paths;
-        while let Ok(more) = rx.recv_timeout(Duration::from_millis(800)) {
+        while let Ok(Ok(more)) = rx.recv_timeout(Duration::from_millis(800)) {
             all.extend(more);
         }
         assert!(all.iter().any(|p| p.ends_with("f4.txt")));

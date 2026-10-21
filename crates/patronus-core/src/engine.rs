@@ -141,8 +141,8 @@ pub struct Engine {
     seen: HashMap<(String, PathBuf), SystemTime>,
     done_tx: Sender<(String, String, Outcome)>,
     done_rx: Receiver<(String, String, Outcome)>,
-    files_tx: Sender<Vec<PathBuf>>,
-    files_rx: Receiver<Vec<PathBuf>>,
+    files_tx: Sender<Result<Vec<PathBuf>, String>>,
+    files_rx: Receiver<Result<Vec<PathBuf>, String>>,
     watcher: Option<Watcher>,
     watched: BTreeSet<PathBuf>,
     matchers: Vec<(String, Matcher)>,
@@ -245,25 +245,43 @@ impl Engine {
                 }
             }
         }
+        self.update_watcher();
+    }
+
+    /// Surveille les dossiers des déclencheurs « fichiers » qui existent ; rappelé régulièrement, pour
+    /// qu'un dossier créé après coup soit surveillé. Les dossiers introuvables sont signalés (une
+    /// fois, et plus quand ils apparaissent).
+    fn update_watcher(&mut self) {
+        if self.headless {
+            return;
+        }
         let dirs: BTreeSet<PathBuf> =
             self.matchers.iter().map(|(_, m)| m.dossier().to_path_buf()).filter(|d| d.is_dir()).collect();
-        if dirs != self.watched && !self.headless {
+        if dirs != self.watched {
             self.watcher = None;
             if !dirs.is_empty() {
                 match Watcher::start(&dirs, self.debounce, self.files_tx.clone()) {
                     Ok(w) => {
-                        self.problems.extend(w.problems.iter().cloned());
+                        for p in w.problems.clone() {
+                            self.problem(p);
+                        }
                         self.watcher = Some(w);
                     }
-                    Err(e) => self.problems.push(format!("Surveillance des fichiers impossible : {e}")),
+                    Err(e) => self.problem(format!("Surveillance des fichiers impossible : {e}")),
                 }
             }
             self.watched = dirs;
         }
-        for (id, m) in &self.matchers {
-            if !m.dossier().is_dir() {
-                self.problems.push(format!("Tâche {id} : dossier surveillé introuvable ({}).", m.dossier().display()));
-            }
+        const MISSING: &str = "dossier surveillé introuvable";
+        self.problems.retain(|p| !p.contains(MISSING));
+        let missing: Vec<String> = self
+            .matchers
+            .iter()
+            .filter(|(_, m)| !m.dossier().is_dir())
+            .map(|(id, m)| format!("Tâche {id} : {MISSING} ({}).", m.dossier().display()))
+            .collect();
+        for p in missing {
+            self.problem(p);
         }
     }
 
@@ -397,7 +415,7 @@ impl Engine {
             }
         };
         if let Err(e) = self.store.save(&run) {
-            self.problems.push(format!("Enregistrement de l'exécution impossible : {e}"));
+            self.problem(format!("Enregistrement de l'exécution impossible : {e}"));
         }
         let stop = Arc::new(AtomicBool::new(false));
         self.active.insert(task_id.to_string(), Active { run_id: run.id.clone(), stop: stop.clone() });
@@ -463,7 +481,7 @@ impl Engine {
                 run.fin = Some(now.max(run.debut));
                 let run = run.clone();
                 if let Err(e) = self.store.save(&run) {
-                    self.problems.push(format!("Enregistrement de l'exécution impossible : {e}"));
+                    self.problem(format!("Enregistrement de l'exécution impossible : {e}"));
                 }
             }
             self.finished.push(run_id);
@@ -474,6 +492,7 @@ impl Engine {
         if self.last_refresh.elapsed() >= self.refresh_every {
             self.last_refresh = Instant::now();
             changed |= self.refresh_runs();
+            self.update_watcher();
             // Départs en attente d'une exécution menée par un autre processus, maintenant terminée.
             let ready: Vec<String> = self
                 .pending
@@ -509,8 +528,11 @@ impl Engine {
             changed = true;
         }
         let mut changed_files: Vec<PathBuf> = Vec::new();
-        while let Ok(paths) = self.files_rx.try_recv() {
-            changed_files.extend(paths);
+        while let Ok(msg) = self.files_rx.try_recv() {
+            match msg {
+                Ok(paths) => changed_files.extend(paths),
+                Err(e) => self.problem(e),
+            }
         }
         if !changed_files.is_empty() {
             changed_files.sort();
@@ -523,7 +545,7 @@ impl Engine {
                         id.clone(),
                         changed_files
                             .iter()
-                            .filter(|p| m.matches(p) && !p.starts_with(&self.data_dir))
+                            .filter(|p| m.matches(p) && crate::watch::strip_prefix_ci(p, &self.data_dir).is_none())
                             .cloned()
                             .collect::<Vec<_>>(),
                     )
@@ -730,14 +752,14 @@ impl Engine {
             f(r);
             let r = r.clone();
             if let Err(e) = self.store.save(&r) {
-                self.problems.push(format!("Enregistrement de l'exécution impossible : {e}"));
+                self.problem(format!("Enregistrement de l'exécution impossible : {e}"));
             }
         }
     }
 
     fn record(&mut self, run: Run) {
         if let Err(e) = self.store.save(&run) {
-            self.problems.push(format!("Enregistrement de l'exécution impossible : {e}"));
+            self.problem(format!("Enregistrement de l'exécution impossible : {e}"));
         }
         self.finished.push(run.id.clone());
         self.runs.insert(0, run);
@@ -800,7 +822,7 @@ impl Engine {
     fn save_planning(&mut self) {
         let json = serde_json::to_vec_pretty(&self.planning).unwrap_or_default();
         if let Err(e) = write_atomic(&self.data_dir.join("planning.json"), &json) {
-            self.problems.push(format!("Enregistrement de planning.json impossible : {e}"));
+            self.problem(format!("Enregistrement de planning.json impossible : {e}"));
         }
     }
 
@@ -1240,5 +1262,50 @@ mod tests {
         assert_eq!(window.runs.len(), 1);
         assert_eq!(window.runs[0].statut, Status::Reussie);
         assert_eq!(window.take_finished().len(), 1, "annoncée comme les autres");
+    }
+
+    /// Un même problème n'apparaît qu'une fois, même après plusieurs rechargements ; il disparaît quand
+    /// sa cause disparaît.
+    #[test]
+    fn problems_are_not_duplicated() {
+        let dir = test_dir("engine-problems");
+        let now = at(21, 10, 0);
+        let mut e = Engine::open(&dir.join("data"), now);
+        let fw = FileWatch { dossier: dir.join("absent"), ..Default::default() };
+        let t = task("x", vec![Trigger::Fichiers { fichiers: fw }]);
+        e.save_task(Some("doc"), &t, now).unwrap();
+        e.save_task(Some("doc"), &t, now).unwrap();
+        e.reload_tasks(now);
+        assert_eq!(e.problems.iter().filter(|p| p.contains("introuvable")).count(), 1, "{:?}", e.problems);
+        std::fs::create_dir_all(dir.join("absent")).unwrap();
+        e.reload_tasks(now);
+        assert!(!e.problems.iter().any(|p| p.contains("introuvable")), "{:?}", e.problems);
+    }
+
+    /// Un dossier surveillé créé après le chargement de la tâche finit par être surveillé.
+    #[test]
+    fn watched_folder_created_later_is_watched() {
+        let dir = test_dir("engine-later");
+        let watched = dir.join("northwind-docs");
+        let (exec, counter) = fake(Duration::ZERO);
+        let opts = Options {
+            executor: Some(exec),
+            debounce: Duration::from_millis(200),
+            refresh_every: Duration::from_millis(50),
+            ..Options::default()
+        };
+        let now = at(21, 10, 0);
+        let mut e = Engine::open_opts(&dir.join("data"), now, opts);
+        let fw = FileWatch { dossier: watched.clone(), ..Default::default() };
+        e.save_task(None, &task("x", vec![Trigger::Fichiers { fichiers: fw }]), now).unwrap();
+        std::fs::create_dir_all(&watched).unwrap();
+        spin(&mut e, now, Duration::from_millis(300));
+        std::fs::write(watched.join("guide.md"), "x").unwrap();
+        let start = Instant::now();
+        while counter.all().is_empty() && start.elapsed() < Duration::from_secs(5) {
+            e.tick(now);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(counter.all().len(), 1, "{:?}", e.problems);
     }
 }

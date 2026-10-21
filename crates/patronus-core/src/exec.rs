@@ -6,6 +6,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use crate::run::{Cost, Status, read_lossy, tail_summary};
@@ -67,13 +68,24 @@ pub fn run_process_with(
     max: Duration,
     check: &mut dyn FnMut() -> Option<(Status, String)>,
 ) -> (Status, Option<i32>) {
-    let open = |p: &Path| OpenOptions::new().create(true).append(true).open(p);
-    let (out, err) = match (open(stdout.unwrap_or(journal)), open(journal)) {
-        (Ok(o), Ok(e)) => (o, e),
-        (Err(e), _) | (_, Err(e)) => {
+    let journal_file = match OpenOptions::new().create(true).append(true).open(journal) {
+        Ok(f) => Arc::new(Mutex::new(f)),
+        Err(e) => {
             log(journal, &format!("[patronus] journal impossible : {e}"));
             return (Status::Impossible, None);
         }
+    };
+    // Sortie standard dans un fichier à part (flux de Claude, écrit tel quel), ou dans le journal ;
+    // ce qui va au journal passe par un tube, décodé ligne à ligne (`decode_line`).
+    let out = match stdout {
+        Some(p) => match OpenOptions::new().create(true).append(true).open(p) {
+            Ok(f) => Stdio::from(f),
+            Err(e) => {
+                log(journal, &format!("[patronus] sortie impossible : {e}"));
+                return (Status::Impossible, None);
+            }
+        },
+        None => Stdio::piped(),
     };
     let input = match stdin.map(std::fs::File::open) {
         None => Stdio::null(),
@@ -83,7 +95,7 @@ pub fn run_process_with(
             return (Status::Impossible, None);
         }
     };
-    cmd.stdin(input).stdout(Stdio::from(out)).stderr(Stdio::from(err));
+    cmd.stdin(input).stdout(out).stderr(Stdio::piped());
     // Créé suspendu, rangé dans un objet de tâche, puis relancé : aucun petit-enfant n'échappe à
     // l'objet, et tout s'arrête avec lui (arrêt demandé, ou Patronus qui s'arrête brutalement).
     let job = Job::new();
@@ -101,16 +113,88 @@ pub fn run_process_with(
         }
     };
     let job = job.filter(|j| j.assign(&child));
+    let mut pumps = Vec::new();
+    if let Some(o) = child.stdout.take() {
+        pumps.push(pump(o, journal_file.clone()));
+    }
+    if let Some(e) = child.stderr.take() {
+        pumps.push(pump(e, journal_file.clone()));
+    }
     if suspended && resume_threads(child.id()) == 0 {
         log(journal, "[patronus] le processus n'a pas pu être relancé après sa création");
     }
+    let result = supervise(&mut child, job.as_ref(), journal, stop, max, check);
+    // La sortie est entièrement recopiée avant de rendre la main (2 s au plus : un processus resté
+    // hors de l'objet de tâche pourrait garder le tube ouvert).
+    for done in pumps {
+        let _ = done.recv_timeout(Duration::from_secs(2));
+    }
+    result
+}
+
+/// Recopie une sortie dans le journal, ligne à ligne. Prévient sur le canal rendu quand la sortie est
+/// fermée.
+fn pump(source: impl std::io::Read + Send + 'static, journal: Arc<Mutex<fs::File>>) -> mpsc::Receiver<()> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(source).split(b'\n').map_while(Result::ok) {
+            let text = decode_line(&line);
+            let mut f = journal.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _ = writeln!(f, "{}", text.trim_end_matches('\r'));
+        }
+        let _ = tx.send(());
+    });
+    rx
+}
+
+/// Une ligne de sortie : UTF-8 si elle l'est, sinon la page de code OEM (celle de cmd et de
+/// nombreux outils Windows quand leur sortie ne va pas à une console).
+pub fn decode_line(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(s) => s.to_string(),
+        Err(_) => oem_to_string(bytes),
+    }
+}
+
+#[cfg(windows)]
+fn oem_to_string(bytes: &[u8]) -> String {
+    use windows_sys::Win32::Globalization::{CP_OEMCP, MultiByteToWideChar};
+    if bytes.is_empty() || bytes.len() > i32::MAX as usize {
+        return String::from_utf8_lossy(bytes).into_owned();
+    }
+    unsafe {
+        let n = MultiByteToWideChar(CP_OEMCP, 0, bytes.as_ptr(), bytes.len() as i32, std::ptr::null_mut(), 0);
+        if n <= 0 {
+            return String::from_utf8_lossy(bytes).into_owned();
+        }
+        let mut wide = vec![0u16; n as usize];
+        MultiByteToWideChar(CP_OEMCP, 0, bytes.as_ptr(), bytes.len() as i32, wide.as_mut_ptr(), n);
+        String::from_utf16_lossy(&wide)
+    }
+}
+
+#[cfg(not(windows))]
+fn oem_to_string(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// Attend la fin du processus, l'arrêt demandé, la durée maximale ou ce que `check` signale.
+fn supervise(
+    child: &mut std::process::Child,
+    job: Option<&Job>,
+    journal: &Path,
+    stop: &AtomicBool,
+    max: Duration,
+    check: &mut dyn FnMut() -> Option<(Status, String)>,
+) -> (Status, Option<i32>) {
     let start = Instant::now();
     loop {
         match child.try_wait() {
             Ok(Some(st)) => {
                 let code = st.code();
                 // Ce que le processus a laissé tourner derrière lui s'arrête avec l'objet de tâche.
-                if let Some(j) = &job {
+                if let Some(j) = job {
                     let left = j.active_processes();
                     if left > 0 {
                         log(journal, &format!("[patronus] {left} processus laissé(s) en arrière-plan, arrêté(s)"));
@@ -122,7 +206,7 @@ pub fn run_process_with(
             Ok(None) => {}
             Err(e) => {
                 log(journal, &format!("[patronus] attente impossible : {e}"));
-                kill_tree(&mut child, job.as_ref());
+                kill_tree(child, job);
                 return (Status::Echouee, None);
             }
         }
@@ -134,7 +218,7 @@ pub fn run_process_with(
             check()
         };
         if let Some((status, msg)) = why {
-            kill_tree(&mut child, job.as_ref());
+            kill_tree(child, job);
             log(journal, &format!("\n[patronus] {msg}"));
             return (status, None);
         }
@@ -494,5 +578,15 @@ mod tests {
         let pid = wait_pid(&pid_file);
         assert!(dies_soon(pid), "le ping {pid} laissé par le script tourne encore");
         assert!(read_lossy(&dir.join("j.txt")).contains("laissé(s) en arrière-plan, arrêté(s)"));
+    }
+
+    /// La sortie de cmd est en page de code OEM (« caf� ») : elle est forcée en UTF-8.
+    #[test]
+    fn cmd_output_is_utf8() {
+        let dir = test_dir("exec-cmd-utf8");
+        let t = script_task(Shell::Cmd, "echo café élève", &dir);
+        let out = run_script("e", &t, &ctx(), &dir.join("j.txt"), &AtomicBool::new(false));
+        assert_eq!(out.status, Status::Reussie, "{}", out.summary);
+        assert!(out.summary.contains("café élève"), "{}", out.summary);
     }
 }
