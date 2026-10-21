@@ -391,6 +391,8 @@ pub struct Loaded {
     pub id: String,
     pub path: PathBuf,
     pub task: Result<Task, String>,
+    /// Ce qui empêche la tâche de partir (`Task::validate`), calculé au chargement.
+    pub problems: Vec<String>,
 }
 
 /// Les tâches globales, rangées dans `dir`.
@@ -417,7 +419,8 @@ impl TaskStore {
             .map(|path| {
                 let id = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
                 let task = read_task(&path);
-                Loaded { id, path, task }
+                let problems = task.as_ref().map(Task::validate).unwrap_or_default();
+                Loaded { id, path, task, problems }
             })
             .collect();
         out.sort_by(|a, b| a.id.cmp(&b.id));

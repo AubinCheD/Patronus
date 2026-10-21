@@ -137,3 +137,24 @@ pub fn request_close(h: &mut H) {
     h.step();
     h.step();
 }
+
+/// Remplace le texte du champ qui contient exactement `old` par `new`.
+pub fn replace_text(h: &mut H, old: &str, new: &str) {
+    let is_field = |n: &AccessKitNode<'_>, v: &str| {
+        matches!(n.role(), egui::accesskit::Role::TextInput | egui::accesskit::Role::MultilineTextInput)
+            && n.value().as_deref() == Some(v)
+    };
+    wait_until(h, &format!("champ « {old} »"), |h| h.query_by(|n| is_field(n, old)).is_some());
+    h.get_by(|n| is_field(n, old)).focus();
+    h.step();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.step();
+    h.get_by(|n| is_field(n, old)).type_text(new);
+    h.step();
+    h.step();
+}
+
+/// L'application, posée : plus aucun rafraîchissement demandé en continu.
+pub fn settles(h: &mut H) -> bool {
+    h.try_run().is_ok()
+}

@@ -233,7 +233,7 @@ impl Engine {
         self.matchers.clear();
         for l in &self.loaded {
             let Ok(task) = &l.task else { continue };
-            if !task.active || !task.validate().is_empty() {
+            if !task.active || !l.problems.is_empty() {
                 continue;
             }
             if let Some(at) = next_due(task, now) {

@@ -51,6 +51,8 @@ enum Act {
     Toggle(String, bool),
     SelectRun(String),
     Inbox,
+    /// Fermer l'éditeur (après confirmation s'il y a des modifications).
+    CloseEditor,
     Command(Command),
 }
 
@@ -89,12 +91,16 @@ pub struct App {
     palette_open: bool,
     palette_query: String,
     toasts: Vec<Toast>,
-    /// Journal affiché : exécution, texte, date de lecture (relu chaque seconde si elle tourne).
-    journal: Option<(String, String, Instant)>,
+    /// Journal et diff de l'exécution affichée.
+    shown: Option<inbox::Shown>,
     capture: Option<(String, Instant, bool)>,
     acts: Vec<Act>,
     /// Dernier titre envoyé à la fenêtre (l'envoyer la redessine).
     title: String,
+    /// Action en attente de confirmation : elle abandonnerait des modifications de l'éditeur.
+    confirm: Option<Act>,
+    /// Exécution choisie pendant qu'elle tournait : marquée lue à sa fin si elle est toujours affichée.
+    read_when_done: Option<String>,
 }
 
 impl App {
@@ -155,10 +161,12 @@ impl App {
             palette_open: false,
             palette_query: String::new(),
             toasts: Vec::new(),
-            journal: None,
+            shown: None,
             capture,
             acts: Vec::new(),
             title: String::new(),
+            confirm: None,
+            read_when_done: None,
         };
         // Essais : la vue à montrer dans la capture.
         match std::env::var("PATRONUS_CAPTURE_VUE").as_deref() {
@@ -204,6 +212,12 @@ impl App {
     }
 
     fn open_editor(&mut self, id: &str, e: &Engine) {
+        // Déjà ouverte : on revient à son brouillon, tel quel.
+        if self.editor.as_ref().is_some_and(|ed| ed.id.as_deref() == Some(id)) {
+            self.view = View::Editor;
+            self.selected_task = Some(id.to_string());
+            return;
+        }
         if let Some(t) = e.task(id) {
             self.editor = Some(Editor::new(Some(id.to_string()), t.clone()));
             self.view = View::Editor;
@@ -221,7 +235,24 @@ impl App {
 
     fn apply(&mut self, act: Act, e: &mut Engine) {
         let t = now();
+        // Ouvrir une autre tâche, en créer une ou fermer l'éditeur abandonnerait le brouillon : on
+        // demande d'abord.
+        if let Some(ed) = &self.editor
+            && ed.dirty()
+            && match &act {
+                Act::Edit(id) => ed.id.as_ref() != Some(id),
+                Act::NewTask | Act::CloseEditor => true,
+                _ => false,
+            }
+        {
+            self.confirm = Some(act);
+            return;
+        }
         match act {
+            Act::CloseEditor => {
+                self.editor = None;
+                self.view = View::Inbox;
+            }
             Act::Run(id) => {
                 let queued = e.is_running(&id);
                 e.launch(&id, Context { trigger: "à la main".into(), files: vec![] }, t);
@@ -251,7 +282,12 @@ impl App {
             }
             Act::SelectRun(id) => {
                 self.selected_run = Some(id.clone());
-                e.mark_read(&id, true);
+                // Une exécution en cours sera marquée lue à sa fin, si on la regarde encore.
+                if e.runs.iter().any(|r| r.id == id && r.statut == Status::EnCours) {
+                    self.read_when_done = Some(id);
+                } else {
+                    e.mark_read(&id, true);
+                }
                 self.view = View::Inbox;
             }
             Act::Inbox => self.view = View::Inbox,
@@ -321,12 +357,9 @@ impl App {
                 self.palette_open = false;
                 continue;
             }
-            // Une touche sans modificateur sert d'abord à la saisie, sauf les touches de fonction.
+            // Pendant une saisie, une touche sans Ctrl ni Alt (F5 compris) ne déclenche rien.
             let typing = ctx.memory(|m| m.focused().is_some());
-            let plain = !mods.ctrl
-                && !mods.command
-                && !mods.alt
-                && !matches!(key, Key::F1 | Key::F2 | Key::F3 | Key::F4 | Key::F5 | Key::F6);
+            let plain = !mods.ctrl && !mods.command && !mods.alt;
             if typing && plain {
                 continue;
             }
@@ -356,6 +389,16 @@ impl App {
             }
             if ui.button("+ Nouvelle tâche").on_hover_text(self.shortcuts.text(Command::NewTask)).clicked() {
                 self.acts.push(Act::NewTask);
+            }
+            // Un brouillon ouvert reste à portée quand on regarde la boîte.
+            if self.view != View::Editor
+                && let Some(ed) = &self.editor
+            {
+                let nom = if ed.task.nom.trim().is_empty() { "nouvelle tâche" } else { ed.task.nom.trim() };
+                let label = format!("✏ Reprendre « {nom} »{}", if ed.dirty() { " (modifiée)" } else { "" });
+                if ui.button(label).clicked() {
+                    self.view = View::Editor;
+                }
             }
             let running = e.running_count();
             if ui
@@ -412,11 +455,37 @@ impl App {
         });
     }
 
+    /// Confirmation avant d'abandonner les modifications de l'éditeur.
+    fn confirm_window(&mut self, ctx: &egui::Context, e: &mut Engine) {
+        if self.confirm.is_none() {
+            return;
+        }
+        let nom = self.editor.as_ref().map(|ed| ed.task.nom.clone()).unwrap_or_default();
+        let (mut abandon, mut back) = (false, false);
+        egui::Modal::new(egui::Id::unique("abandon-brouillon")).show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.heading("Modifications non enregistrées");
+            ui.label(format!("Les modifications de « {nom} » ne sont pas enregistrées."));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                abandon = ui.button("Abandonner les modifications").clicked();
+                back = ui.button("Revenir au brouillon").clicked();
+            });
+        });
+        if abandon && let Some(act) = self.confirm.take() {
+            self.editor = None;
+            self.apply(act, e);
+        } else if back {
+            self.confirm = None;
+            self.view = View::Editor;
+        }
+    }
+
     fn draw_toasts(&mut self, ctx: &egui::Context) {
         while let Ok((text, status)) = self.finished_rx.try_recv() {
             let color = self.palette.status(status);
             self.toast(text, color);
-            self.journal = None;
+            self.shown = None;
         }
         self.toasts.retain(|t| t.since.elapsed() < Duration::from_secs(6));
         if self.toasts.is_empty() {
@@ -489,6 +558,17 @@ impl eframe::App for App {
         self.settings_window(&ctx, &mut e);
         self.problems_window(&ctx, &mut e);
         self.command_palette(&ctx, &e);
+        self.confirm_window(&ctx, &mut e);
+        // Exécution choisie pendant qu'elle tournait : lue à sa fin si elle est toujours affichée.
+        if let Some(id) = self.read_when_done.clone()
+            && let Some(r) = e.runs.iter().find(|r| r.id == id)
+            && r.statut != Status::EnCours
+        {
+            if self.view == View::Inbox && self.selected_run.as_deref() == Some(id.as_str()) {
+                e.mark_read(&id, true);
+            }
+            self.read_when_done = None;
+        }
         self.draw_toasts(&ctx);
         for act in std::mem::take(&mut self.acts) {
             self.apply(act, &mut e);

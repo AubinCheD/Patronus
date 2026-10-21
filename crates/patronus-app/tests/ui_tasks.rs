@@ -43,3 +43,13 @@ fn clicking_a_row_filters_the_inbox() {
     click(&mut h, "Bonjour contoso");
     wait_until(&mut h, "boîte filtrée sur la tâche", |h| h.state().inbox_filter() == Some("bonjour"));
 }
+
+/// Au repos, la fenêtre ne se redessine pas en continu (le titre envoyé à chaque image la
+/// redessinait sans fin).
+#[test]
+fn idle_window_settles() {
+    let dir = temp("repos");
+    script_task(&dir, "bonjour", "Bonjour contoso", "echo bonjour");
+    let mut h = app(&dir);
+    assert!(settles(&mut h));
+}

@@ -164,16 +164,24 @@ impl App {
             ui.add(egui::Label::new(&r.resume).wrap());
             ui.add_space(6.0);
         }
-        // Journal, relu chaque seconde tant que l'exécution tourne.
-        let stale = match &self.journal {
-            Some((id, _, at)) => id != &r.id || (r.statut == Status::EnCours && at.elapsed() > Duration::from_secs(1)),
+        // Journal et diff, lus une fois (relus chaque seconde tant que l'exécution tourne), pas à
+        // chaque image.
+        let stale = match &self.shown {
+            Some(s) => {
+                s.run_id != r.id || (r.statut == Status::EnCours && s.read_at.elapsed() > Duration::from_secs(1))
+            }
             None => true,
         };
         if stale {
-            self.journal = Some((r.id.clone(), e.store.read_journal(&r.id), Instant::now()));
+            self.shown = Some(Shown {
+                run_id: r.id.clone(),
+                journal: e.store.read_journal(&r.id),
+                diff: e.store.read_diff(&r.id),
+                read_at: Instant::now(),
+            });
         }
-        let diff = e.store.read_diff(&r.id);
-        if let Some(diff) = &diff {
+        let Some(shown) = &self.shown else { return };
+        if let Some(diff) = &shown.diff {
             egui::CollapsingHeader::new(RichText::new("Diff proposé").strong()).default_open(true).show(ui, |ui| {
                 ScrollArea::vertical().id_salt("diff").max_height(240.0).show(ui, |ui| {
                     for line in diff.lines() {
@@ -190,12 +198,19 @@ impl App {
             });
         }
         ui.label(RichText::new("Journal").strong());
-        let text = self.journal.as_ref().map(|j| j.1.clone()).unwrap_or_default();
         ScrollArea::both().id_salt("journal").auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
-            if text.is_empty() {
+            if shown.journal.is_empty() {
                 ui.label(RichText::new("(journal vide)").color(p.text_dim));
             }
-            ui.add(egui::Label::new(RichText::new(text).monospace().size(12.0)).selectable(true));
+            ui.add(egui::Label::new(RichText::new(shown.journal.as_str()).monospace().size(12.0)).selectable(true));
         });
     }
+}
+
+/// Journal et diff de l'exécution affichée.
+pub(super) struct Shown {
+    run_id: String,
+    journal: String,
+    diff: Option<String>,
+    read_at: Instant,
 }

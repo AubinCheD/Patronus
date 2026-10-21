@@ -75,7 +75,7 @@ impl App {
                                             }
                                         });
                                     });
-                                    let problems = task.validate();
+                                    let problems = &l.problems;
                                     if !problems.is_empty() {
                                         ui.label(RichText::new(format!("⚠ {}", problems[0])).color(p.warn).small());
                                     }

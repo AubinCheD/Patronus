@@ -8,12 +8,14 @@ use patronus_core::run::now;
 use patronus_core::task::{ClaudeAction, FileWatch, Jour, PERMISSION_MODES, Script, Shell, Task, Trigger, Worktree};
 
 use super::widgets::patterns_edit;
-use super::{App, View};
+use super::{Act, App, View};
 
 /// Une tâche en cours d'édition. `tools` est le texte saisi pour la liste des outils.
 pub(super) struct Editor {
     pub id: Option<String>,
     pub task: Task,
+    /// La tâche telle qu'elle était à l'ouverture de l'éditeur (ou au dernier enregistrement).
+    pub original: Task,
     pub tools: String,
     pub error: Option<String>,
     pub confirm_delete: bool,
@@ -22,7 +24,12 @@ pub(super) struct Editor {
 impl Editor {
     pub fn new(id: Option<String>, task: Task) -> Editor {
         let tools = task.action.claude.as_ref().map(|c| c.outils.join(", ")).unwrap_or_default();
-        Editor { id, task, tools, error: None, confirm_delete: false }
+        Editor { id, original: task.clone(), task, tools, error: None, confirm_delete: false }
+    }
+
+    /// Des modifications ne sont pas enregistrées.
+    pub fn dirty(&self) -> bool {
+        self.built() != self.original
     }
 
     /// La tâche telle qu'elle sera enregistrée.
@@ -317,7 +324,11 @@ impl App {
             });
         });
         let t = now();
-        let mut keep = !close;
+        let mut keep = true;
+        if close {
+            // Fermer passe par l'application : elle demande avant d'abandonner des modifications.
+            self.acts.push(Act::CloseEditor);
+        }
         if save {
             let built = ed.built();
             match e.save_task(ed.id.as_deref(), &built, t) {
