@@ -2,4 +2,6 @@
 //! de résultats. L'application (`patronus-app`) n'est qu'un affichage par-dessus.
 
 pub mod fsutil;
+pub mod schedule;
 pub mod task;
+pub mod watch;
