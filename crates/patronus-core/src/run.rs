@@ -83,6 +83,9 @@ pub struct Run {
     /// Dossier du worktree gardé (session Claude qui a produit un diff).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<PathBuf>,
+    /// Session Claude de l'exécution, pour la reprendre.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_claude: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub liens: Vec<String>,
     #[serde(flatten)]
@@ -105,6 +108,7 @@ impl Run {
             lu: false,
             archive: false,
             worktree: None,
+            session_claude: None,
             liens: Vec::new(),
             autres: BTreeMap::new(),
         }

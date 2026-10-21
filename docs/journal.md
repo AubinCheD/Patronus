@@ -56,3 +56,45 @@ Fait : `PATRONUS_CAPTURE`, avec un dossier de données isolé (`PATRONUS_DATA_DI
   ouverte : en attendant le canal nommé, deux exécutions de la même tâche restent possibles si on
   lance en ligne de commande pendant qu'elle tourne dans la fenêtre.
 - Contrat local : proposition dans `docs/contrat-local.md`.
+
+## 21/10/2026 — action « session Claude non interactive »
+
+**Pilote** : finir l'action Claude, cœur de Patronus ; tests uniquement avec un faux exécutable,
+aucun vrai `claude -p` pendant le développement ; budget vérifié avant le lancement et pendant
+l'exécution, arrêt propre ; résultat (texte, coût, worktree) dans la boîte.
+
+**Fait** :
+- `claude -p <consigne> --output-format stream-json --verbose --allowedTools … --disallowedTools …
+  --max-budget-usd …` dans le dépôt, ou dans un worktree détaché de la branche demandée
+  (`<données>\worktrees\<exécution>`) ; la copie de travail de l'utilisateur n'est jamais touchée.
+- Outils : lecture seule (Read, Grep, Glob) si la tâche n'en liste aucun ; `git push`, `git merge`,
+  `gh pr merge`, `gh release`, `npm publish`, `cargo publish` toujours interdits.
+- Budget : obligatoire pour une session Claude (une tâche sans budget est invalide et ne part pas) ;
+  passé à Claude Code ; et, pendant l'exécution, le coût annoncé dans le flux est surveillé : au-delà,
+  arrêt de l'arbre de processus, entrée « arrêtée : budget atteint ».
+- Tours : `--max-turns` n'apparaît pas dans l'aide de la CLI installée ; Patronus compte les messages
+  de Claude dans le flux et arrête au-delà de `tours_max` (approximation : un message par appel
+  d'outil).
+- Boîte : réponse de Claude en résumé, tokens et coût « équivalent API », transcription lisible dans
+  le journal (flux brut dans `sortie.jsonl`), identifiant de session gardé ; le worktree est gardé
+  avec `diff.patch` s'il a produit quelque chose, supprimé sinon.
+- Essais : `faux-claude` (binaire d'essai de `patronus-core`), désigné par `PATRONUS_CLAUDE`.
+
+## Pistes après le premier jet
+
+1. **Symboles d'état** : ils s'affichaient en carrés vides (glyphes absents de la police). Corrigé
+   pendant le premier jet : police d'emoji monochrome d'egui pour ▶ ■ ✏, pastilles d'état dessinées.
+   À revérifier à l'œil sur l'écran réel (les captures étaient réduites).
+2. **Branche distante** : déclencheur « `origin/<branche>` avance » par `git fetch` périodique, sans
+   écrire dans le dépôt de travail ; la consigne reçoit le journal des nouveaux commits.
+3. **Application fermée** : tâche planifiée de Windows qui lance `patronus lancer <tâche>` aux
+   échéances ; l'interface retrouve les résultats dans la boîte. À trancher : une tâche planifiée par
+   tâche, ou un service.
+4. **Premier essai réel de l'action Claude**, par l'utilisateur : une tâche en lecture seule, petit
+   budget, sur un dépôt sans enjeu ; vérifier le résumé, le coût affiché, le journal, et que le
+   budget et les tours arrêtent bien une vraie session.
+
+Autres pistes : *Appliquer le diff* dans la copie de travail (après confirmation), *Reprendre dans
+Fawkes* (session gardée, attend le contrat local), canal nommé (`docs/contrat-local.md`), binaire
+`faux-claude` à sortir de la distribution, tâches propres à un dépôt (`.patronus/`), enchaînement de
+tâches.

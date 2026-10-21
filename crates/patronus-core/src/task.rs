@@ -263,8 +263,10 @@ impl Task {
                 if looks_like_secret(&c.consigne) {
                     out.push("La consigne semble contenir un secret : il n'a rien à y faire.".into());
                 }
-                if c.budget_usd.is_some_and(|b| !(b > 0.0)) {
-                    out.push("Le budget doit être positif.".into());
+                match c.budget_usd {
+                    None => out.push("Une session Claude demande un budget (en dollars, équivalent API).".into()),
+                    Some(b) if !(b > 0.0) => out.push("Le budget doit être positif.".into()),
+                    _ => {}
                 }
                 if c.tours_max == Some(0) {
                     out.push("Le nombre de tours doit être positif.".into());

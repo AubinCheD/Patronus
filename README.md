@@ -63,7 +63,10 @@ Premier jet (octobre 2026) :
 - tâches en fichiers JSON (`<données>\taches\<id>.json`), éditables dans l'application ;
 - déclencheurs : heure (jours choisis, rattrapage facultatif), intervalle, fichier modifié, à la main
   (bouton, palette, `patronus lancer <tâche>`) ;
-- action : script PowerShell, cmd ou bash ; les sessions Claude non interactives arrivent ensuite ;
+- actions : script PowerShell, cmd ou bash ; session Claude non interactive (`claude -p`), dans le
+  dépôt ou un worktree dédié, outils limités (lecture seule par défaut, push et publication
+  toujours interdits), budget obligatoire surveillé pendant l'exécution, nombre de tours borné ;
+  résumé, coût « équivalent API », transcription et diff dans la boîte ;
 - garde-fous : durée maximale, une exécution à la fois par tâche (un départ en attente au plus),
   arrêt par tâche ou global, journal complet, tâche invalide ou soupçonnée de contenir un secret
   refusée ;

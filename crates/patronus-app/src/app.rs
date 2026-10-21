@@ -539,7 +539,7 @@ impl App {
             facts.push(format!("{} + {} tokens · {:.2} $ équivalent API", c.tokens_entree, c.tokens_sortie, c.usd));
         }
         ui.label(RichText::new(facts.join(" · ")).color(p.text_dim));
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if r.statut == Status::EnCours {
                 if ui.button("■ Arrêter").clicked() {
                     self.acts.push(Act::Stop(r.tache.clone()));
@@ -725,7 +725,7 @@ impl App {
                 }
                 if ui.radio(is_claude, "Session Claude non interactive").clicked() && !is_claude {
                     ed.task.action.script = None;
-                    ed.task.action.claude = Some(ClaudeAction::default());
+                    ed.task.action.claude = Some(ClaudeAction { budget_usd: Some(1.0), tours_max: Some(30), ..Default::default() });
                 }
             });
             if let Some(s) = &mut ed.task.action.script {
@@ -775,7 +775,7 @@ impl App {
                     ui.end_row();
                     ui.label("Budget ($, équivalent API)");
                     let mut budget = c.budget_usd.unwrap_or(0.0);
-                    if ui.add(egui::DragValue::new(&mut budget).range(0.0..=100.0).speed(0.05).max_decimals(2)).on_hover_text("0 : sans limite").changed() {
+                    if ui.add(egui::DragValue::new(&mut budget).range(0.0..=100.0).speed(0.05).max_decimals(2)).on_hover_text("Obligatoire : la session s'arrête au-delà").changed() {
                         c.budget_usd = (budget > 0.0).then_some(budget);
                     }
                     ui.end_row();

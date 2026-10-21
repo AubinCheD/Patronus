@@ -284,6 +284,7 @@ impl Engine {
                 run.resume = outcome.summary;
                 run.cout = outcome.cost;
                 run.worktree = outcome.worktree;
+                run.session_claude = outcome.session;
                 run.fin = Some(now.max(run.debut));
                 let run = run.clone();
                 if let Err(e) = self.store.save(&run) {
@@ -469,11 +470,11 @@ mod tests {
             let start = Instant::now();
             while start.elapsed() < hold {
                 if stop.load(Ordering::Relaxed) {
-                    return Outcome { status: Status::Arretee, code: None, summary: "arrêtée".into(), cost: None, worktree: None };
+                    return Outcome { status: Status::Arretee, code: None, summary: "arrêtée".into(), cost: None, worktree: None, session: None };
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
-            Outcome { status: Status::Reussie, code: Some(0), summary: format!("ok : {}", ctx.trigger), cost: None, worktree: None }
+            Outcome { status: Status::Reussie, code: Some(0), summary: format!("ok : {}", ctx.trigger), cost: None, worktree: None, session: None }
         });
         (f, counter)
     }

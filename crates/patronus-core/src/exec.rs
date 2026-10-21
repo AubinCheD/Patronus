@@ -26,11 +26,13 @@ pub struct Outcome {
     pub summary: String,
     pub cost: Option<Cost>,
     pub worktree: Option<PathBuf>,
+    /// Identifiant de la session Claude, pour la reprendre.
+    pub session: Option<String>,
 }
 
 impl Outcome {
     pub fn impossible(why: impl Into<String>) -> Outcome {
-        Outcome { status: Status::Impossible, code: None, summary: why.into(), cost: None, worktree: None }
+        Outcome { status: Status::Impossible, code: None, summary: why.into(), cost: None, worktree: None, session: None }
     }
 }
 
@@ -39,16 +41,29 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Lance `cmd`, sortie standard et d'erreur ajoutées au journal, et attend sa fin, l'arrêt demandé
 /// (`stop`) ou la durée maximale. Rend le statut et le code de retour.
-pub fn run_process(mut cmd: Command, journal: &Path, stop: &AtomicBool, max: Duration) -> (Status, Option<i32>) {
-    let file = match OpenOptions::new().create(true).append(true).open(journal) {
-        Ok(f) => f,
-        Err(e) => return (Status::Impossible, None).also(|| log(journal, &format!("journal impossible : {e}"))),
+pub fn run_process(cmd: Command, journal: &Path, stop: &AtomicBool, max: Duration) -> (Status, Option<i32>) {
+    run_process_with(cmd, journal, None, stop, max, &mut || None)
+}
+
+/// Comme `run_process`, la sortie standard pouvant aller dans un fichier à part (`stdout`), et
+/// `check` appelé régulièrement : s'il rend un statut et une raison, le processus est arrêté.
+pub fn run_process_with(
+    mut cmd: Command,
+    journal: &Path,
+    stdout: Option<&Path>,
+    stop: &AtomicBool,
+    max: Duration,
+    check: &mut dyn FnMut() -> Option<(Status, String)>,
+) -> (Status, Option<i32>) {
+    let open = |p: &Path| OpenOptions::new().create(true).append(true).open(p);
+    let (out, err) = match (open(stdout.unwrap_or(journal)), open(journal)) {
+        (Ok(o), Ok(e)) => (o, e),
+        (Err(e), _) | (_, Err(e)) => {
+            log(journal, &format!("[patronus] journal impossible : {e}"));
+            return (Status::Impossible, None);
+        }
     };
-    let err = match file.try_clone() {
-        Ok(f) => f,
-        Err(_) => return (Status::Impossible, None),
-    };
-    cmd.stdin(Stdio::null()).stdout(Stdio::from(file)).stderr(Stdio::from(err));
+    cmd.stdin(Stdio::null()).stdout(Stdio::from(out)).stderr(Stdio::from(err));
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -76,11 +91,11 @@ pub fn run_process(mut cmd: Command, journal: &Path, stop: &AtomicBool, max: Dur
             }
         }
         let why = if stop.load(Ordering::Relaxed) {
-            Some((Status::Arretee, "arrêtée à la main"))
+            Some((Status::Arretee, "arrêtée à la main".to_string()))
         } else if start.elapsed() >= max {
-            Some((Status::DureeDepassee, "durée maximale dépassée"))
+            Some((Status::DureeDepassee, "durée maximale dépassée".to_string()))
         } else {
-            None
+            check()
         };
         if let Some((status, msg)) = why {
             kill_tree(&mut child);
@@ -90,14 +105,6 @@ pub fn run_process(mut cmd: Command, journal: &Path, stop: &AtomicBool, max: Dur
         std::thread::sleep(Duration::from_millis(50));
     }
 }
-
-trait Also: Sized {
-    fn also(self, f: impl FnOnce()) -> Self {
-        f();
-        self
-    }
-}
-impl<T> Also for T {}
 
 /// Arrête le processus et tout ce qu'il a lancé (un shell lance des enfants).
 fn kill_tree(child: &mut std::process::Child) {
@@ -213,7 +220,7 @@ pub fn run_script(task_id: &str, task: &Task, ctx: &Context, journal: &Path, sto
         Status::Impossible if summary.is_empty() => summary = "Le shell n'a pas pu être lancé (voir le journal).".into(),
         _ => {}
     }
-    Outcome { status, code, summary: summary.trim().to_string(), cost: None, worktree: None }
+    Outcome { status, code, summary: summary.trim().to_string(), cost: None, worktree: None, session: None }
 }
 
 #[cfg(test)]
