@@ -143,3 +143,6 @@ sur ses propres écritures), dix importants, douze mineurs : tous retenus (A1 à
   CLI plus ancienne refusera l'option : l'exécution échoue en le disant (journal).
 - **A6, modes** : seuls le mode par défaut, `acceptEdits`, `plan` et `dontAsk` sont permis
   (`bypassPermissions` ignorerait la liste des outils, `auto` l'élargirait).
+- **A7** : ce qu'un script laisse tourner en arrière-plan (un serveur lancé par `Start-Process`, par
+  exemple) est arrêté à la fin du script, et c'est noté dans son journal : rien ne tourne sans
+  surveillance. Un service à garder vivant relève de Menagerie.

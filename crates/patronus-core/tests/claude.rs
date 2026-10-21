@@ -175,9 +175,15 @@ fn stopped_session_keeps_its_estimated_cost() {
     let run_dir = dir.join("donnees").join("executions").join("r14");
     std::fs::create_dir_all(&run_dir).unwrap();
     let stop = std::sync::Arc::new(AtomicBool::new(false));
-    let s2 = stop.clone();
+    let (s2, stream) = (stop.clone(), run_dir.join("sortie.jsonl"));
+    // Arrêtée dès son premier message, quel que soit le temps que met le faux exécutable à démarrer.
     std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(900));
+        let start = std::time::Instant::now();
+        while !std::fs::read_to_string(&stream).is_ok_and(|s| s.contains("\"assistant\""))
+            && start.elapsed() < std::time::Duration::from_secs(15)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         s2.store(true, std::sync::atomic::Ordering::Relaxed);
     });
     let ctx = Context { trigger: "à la main".into(), files: vec![] };

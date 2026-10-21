@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use crate::run::{Cost, Status, read_lossy, tail_summary};
 use crate::task::{Script, Shell, Task};
+use crate::winproc::{Job, resume_threads};
 
 /// Pourquoi une exécution part : affiché dans la boîte et passé au script.
 #[derive(Clone, Debug, Default)]
@@ -45,6 +46,8 @@ impl Outcome {
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+#[cfg(windows)]
+const CREATE_SUSPENDED: u32 = 0x0000_0004;
 
 /// Lance `cmd`, sortie standard et d'erreur ajoutées au journal, et attend sa fin, l'arrêt demandé
 /// (`stop`) ou la durée maximale. Rend le statut et le code de retour.
@@ -81,10 +84,14 @@ pub fn run_process_with(
         }
     };
     cmd.stdin(input).stdout(Stdio::from(out)).stderr(Stdio::from(err));
+    // Créé suspendu, rangé dans un objet de tâche, puis relancé : aucun petit-enfant n'échappe à
+    // l'objet, et tout s'arrête avec lui (arrêt demandé, ou Patronus qui s'arrête brutalement).
+    let job = Job::new();
+    let suspended = job.is_some();
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd.creation_flags(CREATE_NO_WINDOW | if suspended { CREATE_SUSPENDED } else { 0 });
     }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
@@ -93,17 +100,29 @@ pub fn run_process_with(
             return (Status::Impossible, None);
         }
     };
+    let job = job.filter(|j| j.assign(&child));
+    if suspended && resume_threads(child.id()) == 0 {
+        log(journal, "[patronus] le processus n'a pas pu être relancé après sa création");
+    }
     let start = Instant::now();
     loop {
         match child.try_wait() {
             Ok(Some(st)) => {
                 let code = st.code();
+                // Ce que le processus a laissé tourner derrière lui s'arrête avec l'objet de tâche.
+                if let Some(j) = &job {
+                    let left = j.active_processes();
+                    if left > 0 {
+                        log(journal, &format!("[patronus] {left} processus laissé(s) en arrière-plan, arrêté(s)"));
+                        j.terminate();
+                    }
+                }
                 return (if st.success() { Status::Reussie } else { Status::Echouee }, code);
             }
             Ok(None) => {}
             Err(e) => {
                 log(journal, &format!("[patronus] attente impossible : {e}"));
-                kill_tree(&mut child);
+                kill_tree(&mut child, job.as_ref());
                 return (Status::Echouee, None);
             }
         }
@@ -115,7 +134,7 @@ pub fn run_process_with(
             check()
         };
         if let Some((status, msg)) = why {
-            kill_tree(&mut child);
+            kill_tree(&mut child, job.as_ref());
             log(journal, &format!("\n[patronus] {msg}"));
             return (status, None);
         }
@@ -123,17 +142,23 @@ pub fn run_process_with(
     }
 }
 
-/// Arrête le processus et tout ce qu'il a lancé (un shell lance des enfants).
-fn kill_tree(child: &mut std::process::Child) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        let _ = Command::new("taskkill")
-            .args(["/T", "/F", "/PID", &child.id().to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW)
-            .status();
+/// Arrête le processus et tout ce qu'il a lancé : par l'objet de tâche, sinon par `taskkill /T`
+/// (qui ne suit que les liens de parenté encore vivants).
+fn kill_tree(child: &mut std::process::Child, job: Option<&Job>) {
+    match job {
+        Some(j) => j.terminate(),
+        None => {
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                let _ = Command::new("taskkill")
+                    .args(["/T", "/F", "/PID", &child.id().to_string()])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .status();
+            }
+        }
     }
     let _ = child.kill();
     let _ = child.wait();
@@ -396,5 +421,78 @@ mod tests {
         assert_eq!(out.status, Status::Reussie, "{}", out.summary);
         let lines: Vec<&str> = out.summary.lines().collect();
         assert_eq!(lines, ["101", "500"], "100 fichiers + la ligne « … et 400 autres », puis la liste complète");
+    }
+
+    /// Attend que le script ait écrit le numéro du processus qu'il a lancé.
+    fn wait_pid(file: &Path) -> u32 {
+        let start = Instant::now();
+        loop {
+            if let Some(pid) = fs::read_to_string(file).ok().and_then(|s| s.trim().parse().ok()) {
+                return pid;
+            }
+            assert!(start.elapsed() < Duration::from_secs(15), "le script n'a pas écrit {}", file.display());
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn dies_soon(pid: u32) -> bool {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            if crate::winproc::created(pid).is_none() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        false
+    }
+
+    /// Un petit-enfant (lancé par le script, hors de toute parenté que `taskkill /T` suivrait) meurt
+    /// avec l'arrêt.
+    #[test]
+    fn grandchild_dies_with_the_stop() {
+        let dir = test_dir("exec-grandchild");
+        let pid_file = dir.join("pid.txt");
+        let t = script_task(
+            Shell::Powershell,
+            &format!(
+                "$p = Start-Process ping -ArgumentList '-n','60','127.0.0.1' -WindowStyle Hidden -PassThru; \
+                 Set-Content -Path '{}' -Value $p.Id; Start-Sleep -Seconds 60",
+                pid_file.display()
+            ),
+            &dir,
+        );
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let s2 = stop.clone();
+        let pf = pid_file.clone();
+        let waiter = std::thread::spawn(move || {
+            let pid = wait_pid(&pf);
+            s2.store(true, Ordering::Relaxed);
+            pid
+        });
+        let out = run_script("e", &t, &ctx(), &dir.join("j.txt"), &stop);
+        let pid = waiter.join().unwrap();
+        assert_eq!(out.status, Status::Arretee);
+        assert!(dies_soon(pid), "le ping {pid} lancé par le script tourne encore");
+    }
+
+    /// Ce qu'un script laisse tourner en arrière-plan s'arrête avec lui, et c'est noté.
+    #[test]
+    fn leftover_background_process_is_stopped() {
+        let dir = test_dir("exec-leftover");
+        let pid_file = dir.join("pid.txt");
+        let t = script_task(
+            Shell::Powershell,
+            &format!(
+                "$p = Start-Process ping -ArgumentList '-n','60','127.0.0.1' -WindowStyle Hidden -PassThru; \
+                 Set-Content -Path '{}' -Value $p.Id",
+                pid_file.display()
+            ),
+            &dir,
+        );
+        let out = run_script("e", &t, &ctx(), &dir.join("j.txt"), &AtomicBool::new(false));
+        assert_eq!(out.status, Status::Reussie, "{}", out.summary);
+        let pid = wait_pid(&pid_file);
+        assert!(dies_soon(pid), "le ping {pid} laissé par le script tourne encore");
+        assert!(read_lossy(&dir.join("j.txt")).contains("laissé(s) en arrière-plan, arrêté(s)"));
     }
 }
