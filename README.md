@@ -100,7 +100,14 @@ cargo test
 ```powershell
 target\release\patronus.exe                  # la fenêtre
 target\release\patronus.exe lancer <tâche>   # exécute une tâche sans fenêtre, résultat dans la boîte
+# depuis un terminal, pour attendre la fin et lire le code de retour :
+Start-Process -Wait -NoNewWindow target\release\patronus.exe -ArgumentList 'lancer','<tâche>'
 ```
+
+`lancer` ne fait que lancer la tâche demandée (ni échéances, ni surveillance) ; code de retour 0
+(réussie), 1 (autre statut), 2 (tâche inconnue), 3 (déjà en cours, ici ou dans la fenêtre). Le
+résultat arrive dans la boîte, que la fenêtre relit toutes les 5 s. `--donnees <dossier>` choisit le
+dossier de données.
 
 1. *+ Nouvelle tâche* : un nom, un déclencheur (*+ Heure*, *+ Intervalle* ou *+ Fichier modifié*),
    une commande (par exemple `Get-Date` en PowerShell), *Enregistrer*.
