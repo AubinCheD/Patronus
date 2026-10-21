@@ -1,11 +1,11 @@
-//! Le moteur : tâches chargées, départs dus, exécutions en cours et boîte de résultats. L'interface
-//! l'appelle régulièrement (`tick`) ; tout le travail long se fait dans des threads.
+//! Le moteur : tâches chargées, départs dus, exécutions en cours et boîte de résultats. Son fil
+//! (`Ticker`) le fait avancer (`tick`) ; tout le travail long se fait dans des fils à part.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use chrono::NaiveDateTime;
@@ -27,6 +27,54 @@ pub struct Planning {
     pub derniere_verification: Option<NaiveDateTime>,
     #[serde(flatten)]
     pub autres: BTreeMap<String, serde_json::Value>,
+}
+
+/// Le moteur partagé entre son fil et l'interface.
+pub type Shared = Arc<Mutex<Engine>>;
+
+/// Verrouille le moteur ; un fil qui a paniqué en le tenant ne le rend pas inutilisable.
+pub fn lock(engine: &Shared) -> MutexGuard<'_, Engine> {
+    engine.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Le fil du moteur : un tour toutes les `period`, que l'interface soit affichée ou non. Après chaque
+/// tour, `on_tick` reçoit le moteur et vrai si quelque chose a changé. Abandonner la valeur arrête le
+/// fil (et attend la fin du tour en cours).
+pub struct Ticker {
+    stop: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Ticker {
+    pub fn start(
+        engine: Shared,
+        period: Duration,
+        clock: fn() -> NaiveDateTime,
+        mut on_tick: impl FnMut(&mut Engine, bool) + Send + 'static,
+    ) -> Ticker {
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        let handle = std::thread::spawn(move || {
+            while !flag.load(Ordering::Relaxed) {
+                {
+                    let mut e = lock(&engine);
+                    let changed = e.tick(clock());
+                    on_tick(&mut e, changed);
+                }
+                std::thread::sleep(period);
+            }
+        });
+        Ticker { stop, handle: Some(handle) }
+    }
+}
+
+impl Drop for Ticker {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
 }
 
 /// Une action exécutée à la place d'un script ou d'une session Claude : pour les essais.
@@ -75,6 +123,8 @@ pub struct Engine {
     executor: Option<Executor>,
     pub debounce: Duration,
     pub retention_days: u32,
+    /// Fermeture demandée : plus aucun départ.
+    shutting_down: bool,
 }
 
 impl Engine {
@@ -116,6 +166,7 @@ impl Engine {
             executor,
             debounce,
             retention_days: 30,
+            shutting_down: false,
         };
         e.store.prune(&mut e.runs, e.retention_days, now);
         e.reload_tasks(now);
@@ -213,6 +264,9 @@ impl Engine {
 
     /// Lance une tâche. Si elle tourne déjà, le départ attend la fin (une seule fois).
     pub fn launch(&mut self, task_id: &str, ctx: Context, now: NaiveDateTime) {
+        if self.shutting_down {
+            return;
+        }
         if self.active.contains_key(task_id) {
             self.pending
                 .entry(task_id.to_string())
@@ -519,6 +573,7 @@ impl Engine {
 
     /// À la fermeture : arrête ce qui tourne, attend un peu, et note l'heure.
     pub fn shutdown(&mut self, now: NaiveDateTime, wait: Duration) {
+        self.shutting_down = true;
         self.stop_all();
         let deadline = std::time::Instant::now() + wait;
         while !self.active.is_empty() && std::time::Instant::now() < deadline {
@@ -796,5 +851,56 @@ mod tests {
             "la seconde exécution ne se relance pas non plus : {:?}",
             e.runs.iter().map(|r| &r.declencheur).collect::<Vec<_>>()
         );
+    }
+
+    /// Le fil du moteur fait partir les échéances et termine les exécutions sans aucune interface.
+    #[test]
+    fn ticker_runs_due_tasks_without_ui() {
+        let dir = test_dir("engine-ticker");
+        let (exec, counter) = fake(Duration::ZERO);
+        let e = Engine::open_with(&dir, at(21, 7, 58), Some(exec), Duration::from_millis(200));
+        let shared: Shared = Arc::new(Mutex::new(e));
+        lock(&shared)
+            .save_task(
+                Some("matin"),
+                &task("x", vec![Trigger::Heure { heure: "08:00".into(), jours: vec![], rattrapage: false }]),
+                at(21, 7, 58),
+            )
+            .unwrap();
+        let ticks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = ticks.clone();
+        let ticker = Ticker::start(
+            shared.clone(),
+            Duration::from_millis(20),
+            || at(21, 8, 0),
+            move |_, _| {
+                seen.fetch_add(1, Ordering::Relaxed);
+            },
+        );
+        let start = Instant::now();
+        while lock(&shared).runs.first().is_none_or(|r| r.statut == Status::EnCours) {
+            assert!(start.elapsed() < Duration::from_secs(5), "échéance non tenue");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        drop(ticker);
+        assert_eq!(counter.all(), ["échéance de 08:00"]);
+        assert!(ticks.load(Ordering::Relaxed) > 0);
+    }
+
+    /// Une fois la fermeture demandée, ni échéance, ni fichier, ni relance en attente ne fait partir
+    /// une exécution.
+    #[test]
+    fn shutdown_starts_nothing() {
+        let dir = test_dir("engine-shutdown");
+        let (exec, counter) = fake(Duration::from_millis(300));
+        let now = at(21, 10, 0);
+        let mut e = Engine::open_with(&dir, now, Some(exec), Duration::from_millis(200));
+        let id = e.save_task(None, &task("x", vec![Trigger::Intervalle { toutes_les_minutes: 1 }]), now).unwrap();
+        e.launch(&id, Context { trigger: "à la main".into(), files: vec![] }, now);
+        e.launch(&id, Context { trigger: "en attente".into(), files: vec![] }, now);
+        e.shutdown(at(21, 10, 5), Duration::from_secs(3));
+        assert_eq!(counter.all(), ["à la main"], "ni la relance en attente ni l'échéance");
+        e.launch(&id, Context { trigger: "après".into(), files: vec![] }, now);
+        assert_eq!(e.running_count(), 0);
     }
 }

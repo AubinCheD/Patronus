@@ -123,3 +123,6 @@ sur ses propres écritures), dix importants, douze mineurs : tous retenus (A1 à
   réécrit toute adresse de push vers un protocole inexistant. Vérifié sans rien pousser
   (`git remote get-url --push`) : un essai avec un vrai `git push`, même vers un dépôt jetable local,
   a été refusé par le système de permissions de la session, et je ne l'ai pas contourné.
+- **Commit `906c5ca` incomplet** : une erreur de `git add` (chemin de l'ancien `app.rs`) l'a privé du
+  moteur, des tests et de la feuille de route ; seul, il ne compile pas. Complété par le commit
+  suivant plutôt que réécrit (pas de `--amend` dans ce dépôt) ; un `git bisect` peut le sauter.

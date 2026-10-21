@@ -15,7 +15,7 @@ fn run_button_launches_the_task() {
     wait_until(&mut h, "exécution terminée", |h| {
         h.state().engine().runs.first().is_some_and(|r| r.statut != Status::EnCours)
     });
-    let run = &h.state().engine().runs[0];
+    let run = h.state().engine().runs[0].clone();
     assert_eq!(run.statut, Status::Reussie, "{}", run.resume);
     assert!(run.resume.contains("bonjour contoso"));
     assert_eq!(run.declencheur, "à la main");
