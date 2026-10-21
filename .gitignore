@@ -4,3 +4,4 @@
 /.superpowers/
 *.png
 /tools/*.exe
+*.local.md
