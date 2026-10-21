@@ -12,6 +12,7 @@ enum Entry {
     Run(String),
     Pause(String, bool),
     Edit(String),
+    PollBranches,
 }
 
 impl App {
@@ -31,6 +32,14 @@ impl App {
                 entries.push((format!("{verb} : {}", t.nom), Entry::Pause(l.id.clone(), !t.active)));
                 entries.push((format!("Modifier : {}", t.nom), Entry::Edit(l.id.clone())));
             }
+        }
+        let branches = e
+            .loaded
+            .iter()
+            .filter_map(|l| l.task.as_ref().ok())
+            .any(|t| t.declencheurs.iter().any(|tr| matches!(tr, patronus_core::task::Trigger::Branche { .. })));
+        if branches {
+            entries.push(("Relever les branches distantes maintenant".into(), Entry::PollBranches));
         }
         let q = self.palette_query.to_lowercase();
         let matching: Vec<&(String, Entry)> = entries
@@ -66,6 +75,7 @@ impl App {
                 Entry::Run(id) => Act::Run(id.clone()),
                 Entry::Pause(id, on) => Act::Toggle(id.clone(), *on),
                 Entry::Edit(id) => Act::Edit(id.clone()),
+                Entry::PollBranches => Act::PollBranches,
             };
             self.acts.push(act);
         }

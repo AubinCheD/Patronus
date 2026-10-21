@@ -66,8 +66,11 @@ fn run_cli(data_dir: &Path, task_id: &str) -> ExitCode {
         eprintln!("Tâche inconnue : {task_id}. Tâches : {}", known.join(", "));
         return ExitCode::from(2);
     }
-    if let Err(why) = engine.try_launch(task_id, Context { trigger: "ligne de commande".into(), files: vec![] }, now())
-        && engine.running_elsewhere(task_id).is_some()
+    if let Err(why) = engine.try_launch(
+        task_id,
+        Context { trigger: "ligne de commande".into(), files: vec![], ..Default::default() },
+        now(),
+    ) && engine.running_elsewhere(task_id).is_some()
     {
         eprintln!("{why}");
         return ExitCode::from(3);

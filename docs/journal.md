@@ -158,3 +158,8 @@ sur ses propres écritures), dix importants, douze mineurs : tous retenus (A1 à
   chevauchait (elle passe à la ligne), chemin du dossier de données qui recouvrait la prochaine
   échéance (il passe dans les réglages), et taille de fenêtre enregistrée en unités zoomées (la
   fenêtre rétrécissait d'un lancement à l'autre).
+- **B2, décision** : la branche distante est lue par `git ls-remote` (aucune écriture) ; quand elle
+  avance, `git fetch` met à jour les objets et la branche de suivi (`origin/main`), comme le fait un
+  éditeur qui relève périodiquement, pour que la tâche puisse travailler sur `origin/main` ; jamais
+  la copie de travail ni les branches locales. Les tests font avancer le « distant » par des commits
+  faits chez lui (aucun push).

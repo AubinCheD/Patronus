@@ -62,7 +62,7 @@ fn run(dir: &Path, t: &Task, id: &str) -> (Outcome, String) {
     let run_dir = dir.join("donnees").join("executions").join(id);
     std::fs::create_dir_all(&run_dir).unwrap();
     let journal = run_dir.join("journal.txt");
-    let ctx = Context { trigger: "à la main".into(), files: vec![] };
+    let ctx = Context { trigger: "à la main".into(), files: vec![], ..Default::default() };
     let out = run_claude("revue", t, &ctx, &journal, &AtomicBool::new(false), &dir.join("donnees"), id);
     (out, std::fs::read_to_string(&journal).unwrap_or_default())
 }
@@ -186,7 +186,7 @@ fn stopped_session_keeps_its_estimated_cost() {
         }
         s2.store(true, std::sync::atomic::Ordering::Relaxed);
     });
-    let ctx = Context { trigger: "à la main".into(), files: vec![] };
+    let ctx = Context { trigger: "à la main".into(), files: vec![], ..Default::default() };
     let out = run_claude("revue", &t, &ctx, &run_dir.join("journal.txt"), &stop, &dir.join("donnees"), "r14");
     assert_eq!(out.status, Status::Arretee, "{}", out.summary);
     let cost = out.cost.expect("coût estimé");
@@ -226,7 +226,7 @@ fn many_changed_files_are_capped() {
     let dir = setup("fichiers");
     let files: Vec<PathBuf> =
         (0..800).map(|i| PathBuf::from(format!(r"C:\dev\northwind\docs\page-{i:03}.md"))).collect();
-    let ctx = Context { trigger: "800 fichiers modifiés".into(), files };
+    let ctx = Context { trigger: "800 fichiers modifiés".into(), files, ..Default::default() };
     let (out, journal) = run_ctx(&dir, &task("Relis les pages modifiées.", &dir, false), "r9", &ctx, None);
     assert_eq!(out.status, Status::Reussie, "{journal}");
     let run_dir = dir.join("donnees/executions/r9");
@@ -240,7 +240,7 @@ fn many_changed_files_are_capped() {
 #[test]
 fn prompt_starting_with_a_dash() {
     let dir = setup("tiret");
-    let ctx = Context { trigger: "à la main".into(), files: vec![] };
+    let ctx = Context { trigger: "à la main".into(), files: vec![], ..Default::default() };
     let (out, journal) = run_ctx(&dir, &task("-x : ceci n'est pas une option", &dir, false), "r10", &ctx, None);
     assert_eq!(out.status, Status::Reussie, "{journal}");
     assert!(out.summary.contains("consigne : -x : ceci n'est pas une option"), "{}", out.summary);
@@ -255,7 +255,8 @@ fn cmd_shim_runs_with_a_multiline_prompt() {
     std::fs::write(&shim, format!("@\"{}\" %*\r\n", env!("CARGO_BIN_EXE_faux-claude"))).unwrap();
     let mut t = task("Première ligne.\nDeuxième ligne.", &dir, false);
     t.action.claude.as_mut().unwrap().outils = vec!["Read".into(), "Bash(npm outdated)".into()];
-    let ctx = Context { trigger: "à la main".into(), files: vec![PathBuf::from("docs/guide.md")] };
+    let ctx =
+        Context { trigger: "à la main".into(), files: vec![PathBuf::from("docs/guide.md")], ..Default::default() };
     let (out, journal) = run_ctx(&dir, &t, "r11", &ctx, Some(&shim));
     assert_eq!(out.status, Status::Reussie, "{journal}");
     assert!(out.summary.contains("outils Read Bash(npm outdated)"), "{}", out.summary);

@@ -7,6 +7,7 @@ pub mod exec;
 pub mod fsutil;
 pub mod lock;
 pub mod pricing;
+pub mod remote;
 pub mod run;
 pub mod schedule;
 pub mod task;

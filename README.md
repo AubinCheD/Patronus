@@ -61,8 +61,10 @@ Détail : [`docs/spec.md`](docs/spec.md).
 
 Premier jet (octobre 2026) :
 - tâches en fichiers JSON (`<données>\taches\<id>.json`), éditables dans l'application ;
-- déclencheurs : heure (jours choisis, rattrapage facultatif), intervalle, fichier modifié, à la main
-  (bouton, palette, `patronus lancer <tâche>`) ;
+- déclencheurs : heure (jours choisis, rattrapage facultatif), intervalle, fichier modifié, branche
+  distante qui avance (`git ls-remote`, sans rien écrire ; la tâche reçoit la liste des nouveaux
+  commits, dans sa consigne ou `PATRONUS_BRANCHE`, `PATRONUS_COMMIT_AVANT`,
+  `PATRONUS_COMMIT_APRES`), à la main (bouton, palette, `patronus lancer <tâche>`) ;
 - actions : script PowerShell, cmd ou bash ; session Claude non interactive (`claude -p`) :
   - lecture seule par défaut ; dès qu'elle peut écrire, dans un worktree dédié (jamais dans la copie
     de travail) ;

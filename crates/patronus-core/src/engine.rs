@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::exec::{Context, Outcome, log, run_script};
 use crate::fsutil::{read_text, write_atomic};
 use crate::lock::TaskLock;
+use crate::remote::Poll;
 use crate::run::{Owner, Run, RunStore, Status};
 use crate::schedule::{MISSED_COUNT_CAP, Missed, missed, next_due};
 use crate::task::{Loaded, Task, TaskStore, Trigger};
@@ -26,6 +27,9 @@ pub struct Planning {
     /// l'ouverture suivante, a été manqué.
     #[serde(default)]
     pub derniere_verification: Option<NaiveDateTime>,
+    /// Dernier commit vu de chaque branche distante surveillée (clé `<tâche>#<n° du déclencheur>`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub branches: BTreeMap<String, String>,
     #[serde(flatten)]
     pub autres: BTreeMap<String, serde_json::Value>,
 }
@@ -168,6 +172,11 @@ pub struct Engine {
     maintenance_due: bool,
     /// Fermeture demandée : plus aucun départ.
     shutting_down: bool,
+    /// Branches distantes : prochain relevé, relevés en cours, résultats.
+    branch_next: HashMap<String, Instant>,
+    branch_busy: BTreeSet<String>,
+    branch_tx: Sender<(String, String, String, Poll)>,
+    branch_rx: Receiver<(String, String, String, Poll)>,
 }
 
 impl Engine {
@@ -188,6 +197,7 @@ impl Engine {
     pub fn open_opts(data_dir: &Path, now: NaiveDateTime, opts: Options) -> Engine {
         let (done_tx, done_rx) = channel();
         let (files_tx, files_rx) = channel();
+        let (branch_tx, branch_rx) = channel();
         let store = RunStore::new(data_dir.join("executions"));
         let (runs, problems) = store.load_all();
         let planning = read_text(&data_dir.join("planning.json"))
@@ -223,6 +233,10 @@ impl Engine {
             last_refresh: Instant::now(),
             maintenance_due: !opts.headless,
             shutting_down: false,
+            branch_next: HashMap::new(),
+            branch_busy: BTreeSet::new(),
+            branch_tx,
+            branch_rx,
         };
         e.reload_tasks(now);
         if !e.headless {
@@ -549,7 +563,13 @@ impl Engine {
                 );
                 continue;
             }
-            self.launch(&id, Context { trigger: format!("échéance de {}", at.format("%H:%M")), files: vec![] }, now);
+            self.launch(
+                &id,
+                Context {
+                    trigger: format!("échéance de {}", at.format("%H:%M")), files: vec![], ..Default::default()
+                },
+                now,
+            );
         }
         let mut changed_files: Vec<PathBuf> = Vec::new();
         while let Ok(msg) = self.files_rx.try_recv() {
@@ -606,10 +626,11 @@ impl Engine {
                     [one] => format!("fichier modifié : {}", one.strip_prefix(&base).unwrap_or(one).display()),
                     many => format!("{} fichiers modifiés", many.len()),
                 };
-                self.launch(&id, Context { trigger, files }, now);
+                self.launch(&id, Context { trigger, files, ..Default::default() }, now);
                 changed = true;
             }
         }
+        changed |= self.poll_branches(now);
         self.heartbeat(now);
         changed
     }
@@ -638,6 +659,78 @@ impl Engine {
             Ok(modified) => modified >= w.start && w.end.is_none_or(|end| modified <= end + margin),
             Err(_) => w.end.is_none_or(|end| SystemTime::now() <= end + self.debounce + margin),
         }
+    }
+
+    /// Relève maintenant toutes les branches distantes (bouton « Vérifier maintenant », essais).
+    pub fn poll_branches_now(&mut self) {
+        self.branch_next.clear();
+    }
+
+    /// Lance les relevés de branches distantes dus (chacun dans un fil : réseau) et traite ceux qui
+    /// sont revenus. Rend vrai si une tâche est partie.
+    fn poll_branches(&mut self, now: NaiveDateTime) -> bool {
+        let mut changed = false;
+        while let Ok((key, task_id, label, poll)) = self.branch_rx.try_recv() {
+            self.branch_busy.remove(&key);
+            let prefix = format!("Tâche {task_id} : branche distante {label}");
+            match poll {
+                Poll::Failed(e) => self.problem(format!("{prefix} illisible : {e}")),
+                Poll::Same => self.problems.retain(|p| !p.starts_with(&prefix)),
+                Poll::First(sha) => {
+                    self.problems.retain(|p| !p.starts_with(&prefix));
+                    self.planning.branches.insert(key, sha);
+                    self.save_planning();
+                }
+                Poll::Moved { from, to, log } => {
+                    self.problems.retain(|p| !p.starts_with(&prefix));
+                    self.planning.branches.insert(key, to.clone());
+                    self.save_planning();
+                    let short = |s: &str| s.chars().take(7).collect::<String>();
+                    let mut notes = format!("Nouveaux commits sur {label} ({} → {}) :", short(&from), short(&to));
+                    for c in &log {
+                        notes.push_str(&format!("\n- {c}"));
+                    }
+                    let ctx = Context {
+                        trigger: format!("{label} a avancé : {} → {}", short(&from), short(&to)),
+                        files: vec![],
+                        vars: vec![
+                            ("PATRONUS_BRANCHE".into(), label.clone()),
+                            ("PATRONUS_COMMIT_AVANT".into(), from),
+                            ("PATRONUS_COMMIT_APRES".into(), to),
+                        ],
+                        notes,
+                    };
+                    self.launch(&task_id, ctx, now);
+                    changed = true;
+                }
+            }
+        }
+        let due = Instant::now();
+        let mut polls = Vec::new();
+        for l in self.loaded.iter().filter(|l| l.problems.is_empty()) {
+            let Ok(task) = &l.task else { continue };
+            let Some(repo) = task.depot.clone().filter(|_| task.active) else { continue };
+            for (i, tr) in task.declencheurs.iter().enumerate() {
+                let Trigger::Branche { branche_distante: b } = tr else { continue };
+                let key = format!("{}#{i}", l.id);
+                if self.branch_busy.contains(&key) || self.branch_next.get(&key).is_some_and(|t| *t > due) {
+                    continue;
+                }
+                let every = Duration::from_secs(b.toutes_les_minutes.max(1) as u64 * 60);
+                polls.push((key, l.id.clone(), repo.clone(), b.distant.clone(), b.branche.clone(), every));
+            }
+        }
+        for (key, task_id, repo, remote, branch, every) in polls {
+            self.branch_next.insert(key.clone(), due + every);
+            self.branch_busy.insert(key.clone());
+            let known = self.planning.branches.get(&key).cloned();
+            let tx = self.branch_tx.clone();
+            std::thread::spawn(move || {
+                let poll = crate::remote::poll(&repo, &remote, &branch, known.as_deref());
+                let _ = tx.send((key, task_id, format!("{remote}/{branch}"), poll));
+            });
+        }
+        changed
     }
 
     /// Change la rétention ; elle s'applique au prochain tour.
@@ -821,7 +914,7 @@ impl Engine {
         }
         if let Some(m) = missed.iter().filter(|m| m.catch_up).max_by_key(|m| m.at) {
             let trigger = format!("rattrapage de {}", m.at.format("%d/%m %H:%M"));
-            self.launch(id, Context { trigger, files: vec![] }, now);
+            self.launch(id, Context { trigger, files: vec![], ..Default::default() }, now);
             return;
         }
         let latest = missed.iter().map(|m| m.at).max().unwrap_or(now);
@@ -960,7 +1053,7 @@ mod tests {
         let now = at(21, 10, 0);
         let mut e = Engine::open(&dir, now);
         let id = e.save_task(None, &task("echo bonjour fabrikam", vec![]), now).unwrap();
-        e.launch(&id, Context { trigger: "à la main".into(), files: vec![] }, now);
+        e.launch(&id, Context { trigger: "à la main".into(), files: vec![], ..Default::default() }, now);
         assert!(e.is_running(&id));
         wait_idle(&mut e, now);
         assert_eq!(e.runs.len(), 1);
@@ -1005,7 +1098,7 @@ mod tests {
         let mut e = Engine::open_with(&dir, now, Some(exec), Duration::from_millis(200));
         let id = e.save_task(None, &task("x", vec![]), now).unwrap();
         for i in 0..4 {
-            e.launch(&id, Context { trigger: format!("n{i}"), files: vec![] }, now);
+            e.launch(&id, Context { trigger: format!("n{i}"), files: vec![], ..Default::default() }, now);
         }
         assert!(e.is_pending(&id));
         wait_idle(&mut e, now);
@@ -1019,7 +1112,7 @@ mod tests {
         let now = at(21, 10, 0);
         let mut e = Engine::open_with(&dir, now, Some(exec), Duration::from_millis(200));
         let id = e.save_task(None, &task("x", vec![]), now).unwrap();
-        e.launch(&id, Context { trigger: "à la main".into(), files: vec![] }, now);
+        e.launch(&id, Context { trigger: "à la main".into(), files: vec![], ..Default::default() }, now);
         e.stop(&id);
         wait_idle(&mut e, now);
         assert_eq!(e.runs[0].statut, Status::Arretee);
@@ -1033,7 +1126,7 @@ mod tests {
         let mut bad = task("", vec![Trigger::Intervalle { toutes_les_minutes: 5 }]);
         let id = e.save_task(None, &bad, now).unwrap();
         assert_eq!(e.next_run(&id), None, "une tâche invalide n'est pas planifiée");
-        e.launch(&id, Context { trigger: "à la main".into(), files: vec![] }, now);
+        e.launch(&id, Context { trigger: "à la main".into(), files: vec![], ..Default::default() }, now);
         assert_eq!(e.runs[0].statut, Status::Impossible);
         assert!(e.runs[0].resume.contains("commande du script est vide"));
         bad.action.script.as_mut().unwrap().commande = "echo x".into();
@@ -1125,7 +1218,7 @@ mod tests {
             vec![Trigger::Fichiers { fichiers: FileWatch { dossier: watched.clone(), ..Default::default() } }];
         let id = e.save_task(None, &t, now).unwrap();
         std::thread::sleep(Duration::from_millis(200));
-        e.launch(&id, Context { trigger: "à la main".into(), files: vec![] }, now);
+        e.launch(&id, Context { trigger: "à la main".into(), files: vec![], ..Default::default() }, now);
         wait_idle(&mut e, now);
         spin(&mut e, now, Duration::from_millis(1500));
         assert_eq!(
@@ -1196,11 +1289,11 @@ mod tests {
         let now = at(21, 10, 0);
         let mut e = Engine::open_with(&dir, now, Some(exec), Duration::from_millis(200));
         let id = e.save_task(None, &task("x", vec![Trigger::Intervalle { toutes_les_minutes: 1 }]), now).unwrap();
-        e.launch(&id, Context { trigger: "à la main".into(), files: vec![] }, now);
-        e.launch(&id, Context { trigger: "en attente".into(), files: vec![] }, now);
+        e.launch(&id, Context { trigger: "à la main".into(), files: vec![], ..Default::default() }, now);
+        e.launch(&id, Context { trigger: "en attente".into(), files: vec![], ..Default::default() }, now);
         e.shutdown(at(21, 10, 5), Duration::from_secs(3));
         assert_eq!(counter.all(), ["à la main"], "ni la relance en attente ni l'échéance");
-        e.launch(&id, Context { trigger: "après".into(), files: vec![] }, now);
+        e.launch(&id, Context { trigger: "après".into(), files: vec![], ..Default::default() }, now);
         assert_eq!(e.running_count(), 0);
     }
 
@@ -1255,7 +1348,12 @@ mod tests {
         h.tick(at(21, 10, 0));
         assert!(h.runs.is_empty(), "ni manquée ni rattrapage : {:?}", h.runs);
         assert_eq!(std::fs::read_to_string(dir.join("planning.json")).unwrap(), planning);
-        h.try_launch("matin", Context { trigger: "ligne de commande".into(), files: vec![] }, at(21, 10, 0)).unwrap();
+        h.try_launch(
+            "matin",
+            Context { trigger: "ligne de commande".into(), files: vec![], ..Default::default() },
+            at(21, 10, 0),
+        )
+        .unwrap();
         wait_idle(&mut h, at(21, 10, 0));
         assert_eq!(h.runs.len(), 1);
         assert_eq!(h.runs[0].statut, Status::Reussie);
@@ -1274,9 +1372,13 @@ mod tests {
         std::fs::create_dir_all(dir.join("verrous")).unwrap();
         std::fs::write(dir.join("verrous").join("revue.lock"), serde_json::to_string(&owner).unwrap()).unwrap();
         assert_eq!(e.running_elsewhere("revue"), Some(owner));
-        let err = e.try_launch("revue", Context { trigger: "ligne de commande".into(), files: vec![] }, at(21, 10, 0));
+        let err = e.try_launch(
+            "revue",
+            Context { trigger: "ligne de commande".into(), files: vec![], ..Default::default() },
+            at(21, 10, 0),
+        );
         assert!(err.unwrap_err().contains("autre processus"));
-        e.launch("revue", Context { trigger: "à la main".into(), files: vec![] }, at(21, 10, 0));
+        e.launch("revue", Context { trigger: "à la main".into(), files: vec![], ..Default::default() }, at(21, 10, 0));
         assert!(e.is_pending("revue"));
         spin(&mut e, at(21, 10, 0), Duration::from_millis(200));
         assert!(counter.all().is_empty(), "le verrou est tenu");
@@ -1299,8 +1401,12 @@ mod tests {
         let mut window = Engine::open_opts(&dir, at(21, 10, 0), opts);
         window.save_task(Some("bonjour"), &task("echo bonjour", vec![]), at(21, 10, 0)).unwrap();
         let mut cli = Engine::open_headless(&dir, at(21, 10, 0));
-        cli.try_launch("bonjour", Context { trigger: "ligne de commande".into(), files: vec![] }, at(21, 10, 0))
-            .unwrap();
+        cli.try_launch(
+            "bonjour",
+            Context { trigger: "ligne de commande".into(), files: vec![], ..Default::default() },
+            at(21, 10, 0),
+        )
+        .unwrap();
         wait_idle(&mut cli, at(21, 10, 0));
         assert!(window.runs.is_empty());
         spin(&mut window, at(21, 10, 0), Duration::from_millis(200));

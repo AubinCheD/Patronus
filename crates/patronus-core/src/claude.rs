@@ -87,6 +87,11 @@ pub fn prompt(task: &Task, ctx: &Context) -> String {
             p.push_str(&format!("- {line}\n"));
         }
     }
+    if !ctx.notes.trim().is_empty() {
+        p.push_str("\n\n");
+        p.push_str(ctx.notes.trim());
+        p.push('\n');
+    }
     p
 }
 
@@ -479,6 +484,7 @@ pub fn run_claude_with(
     let mut cmd = Command::new(exe);
     cmd.args(&args).current_dir(&dir);
     cmd.envs(git_guard_env(std::env::var("GIT_CONFIG_COUNT").ok().as_deref()));
+    cmd.envs(ctx.vars.iter().map(|(k, v)| (k, v)));
     let stream_path = run_dir.join("sortie.jsonl");
     let max = Duration::from_secs(task.garde_fous.duree_max_min as u64 * 60);
     let (turns_max, budget) = (c.tours_max, c.budget_usd);
@@ -675,7 +681,7 @@ mod tests {
 
     #[test]
     fn prompt_lists_the_changed_files() {
-        let ctx = Context { trigger: "x".into(), files: vec![PathBuf::from("docs/guide.md")] };
+        let ctx = Context { trigger: "x".into(), files: vec![PathBuf::from("docs/guide.md")], ..Default::default() };
         let p = prompt(&claude_task(), &ctx);
         assert!(p.starts_with("Relis le code."));
         assert!(p.contains("- docs/guide.md"));

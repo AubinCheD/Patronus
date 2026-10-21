@@ -6,7 +6,9 @@ use std::path::PathBuf;
 use egui::{RichText, ScrollArea, TextEdit};
 use patronus_core::engine::Engine;
 use patronus_core::run::now;
-use patronus_core::task::{ClaudeAction, FileWatch, Jour, PERMISSION_MODES, Script, Shell, Task, Trigger, Worktree};
+use patronus_core::task::{
+    ClaudeAction, FileWatch, Jour, PERMISSION_MODES, RemoteBranch, Script, Shell, Task, Trigger, Worktree,
+};
 
 use super::widgets::patterns_edit;
 use super::{Act, App, View};
@@ -114,6 +116,16 @@ impl App {
                                 ui.add(egui::DragValue::new(toutes_les_minutes).range(1..=1440));
                                 ui.label("minutes (comptées depuis minuit)");
                             }
+                            Trigger::Branche { branche_distante: b } => {
+                                ui.label("Quand");
+                                ui.add(TextEdit::singleline(&mut b.distant).desired_width(70.0).hint_text("origin"));
+                                ui.label("/");
+                                ui.add(TextEdit::singleline(&mut b.branche).desired_width(110.0).hint_text("main"));
+                                ui.label("avance, relue toutes les");
+                                ui.add(egui::DragValue::new(&mut b.toutes_les_minutes).range(1..=1440));
+                                ui.label("min")
+                                    .on_hover_text("Lecture par git ls-remote, sans rien écrire ; les nouveaux commits sont récupérés (git fetch) quand la branche avance");
+                            }
                             Trigger::Fichiers { fichiers } => {
                                 ui.vertical(|ui| {
                                     ui.horizontal(|ui| {
@@ -158,6 +170,9 @@ impl App {
                     ed.task
                         .declencheurs
                         .push(Trigger::Fichiers { fichiers: FileWatch { dossier, inclure: vec![], exclure: vec![], ..Default::default() } });
+                }
+                if ui.button("+ Branche distante").on_hover_text("Quand origin/main avance (nouveau commit, PR fusionnée)").clicked() {
+                    ed.task.declencheurs.push(Trigger::Branche { branche_distante: RemoteBranch::new("main") });
                 }
             });
 

@@ -54,6 +54,8 @@ enum Act {
     Inbox,
     /// Fermer l'éditeur (après confirmation s'il y a des modifications).
     CloseEditor,
+    /// Relever les branches distantes sans attendre.
+    PollBranches,
     Command(Command),
 }
 
@@ -260,7 +262,7 @@ impl App {
             }
             Act::Run(id) => {
                 let queued = e.is_running(&id);
-                e.launch(&id, Context { trigger: "à la main".into(), files: vec![] }, t);
+                e.launch(&id, Context { trigger: "à la main".into(), files: vec![], ..Default::default() }, t);
                 if queued {
                     self.toast("Déjà en cours : relancée à la fin.", self.palette.warn);
                 }
@@ -296,6 +298,10 @@ impl App {
                 self.view = View::Inbox;
             }
             Act::Inbox => self.view = View::Inbox,
+            Act::PollBranches => {
+                e.poll_branches_now();
+                self.toast("Relevé des branches distantes lancé.", self.palette.text_dim);
+            }
             Act::Command(c) => self.command(c, e),
         }
     }

@@ -25,7 +25,7 @@ spécification au plan `docs/superpowers/plans/2026-10-21-passe-complete.md`. Le
 | A12 | Formats : champs inconnus à tous les niveaux, états de référence | fait |
 | A13 | Échéances : veille, longues absences, tâche nouvelle, changement d'heure | fait |
 | B1 | Symboles de l'interface : un glyphe pour chacun, vérifié | fait |
-| B2 | Déclencheur « branche distante » | à faire |
+| B2 | Déclencheur « branche distante » | fait |
 | B3 | Application fermée : tâches du Planificateur de Windows | à faire |
 | B4 | Premier essai réel de l'action Claude | préparé, par l'utilisateur |
 | C1 | Actions sur un résultat : appliquer le diff, worktree, reprendre la session | à faire |

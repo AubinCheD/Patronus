@@ -26,7 +26,7 @@ pub fn next_after(trigger: &Trigger, t: NaiveDateTime) -> Option<NaiveDateTime> 
             // Le compte repart de minuit chaque jour.
             Some(if next >= 24 * 60 { midnight + Duration::days(1) } else { midnight + Duration::minutes(next) })
         }
-        Trigger::Fichiers { .. } => None,
+        Trigger::Fichiers { .. } | Trigger::Branche { .. } => None,
     }
 }
 
@@ -112,6 +112,9 @@ pub fn describe(trigger: &Trigger) -> String {
         Trigger::Fichiers { fichiers } => {
             let what = if fichiers.inclure.is_empty() { "*".to_string() } else { fichiers.inclure.join(", ") };
             format!("fichiers {what} dans {}", fichiers.dossier.display())
+        }
+        Trigger::Branche { branche_distante: b } => {
+            format!("{}/{} avance (relue toutes les {} min)", b.distant, b.branche, b.toutes_les_minutes)
         }
     }
 }

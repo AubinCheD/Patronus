@@ -19,6 +19,11 @@ pub struct Context {
     pub trigger: String,
     /// Fichiers modifiés, pour le déclencheur « fichiers ».
     pub files: Vec<PathBuf>,
+    /// Variables d'environnement données au script et à la session (`PATRONUS_BRANCHE`…).
+    pub vars: Vec<(String, String)>,
+    /// Ce que le déclencheur a à dire (commits arrivés…) : dans le journal, et à la fin de la
+    /// consigne d'une session Claude.
+    pub notes: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -358,6 +363,10 @@ pub fn run_script(task_id: &str, task: &Task, ctx: &Context, journal: &Path, sto
     let mut cmd = shell_command(script);
     cmd.current_dir(&dir).envs(&script.env);
     cmd.env("PATRONUS_TACHE", task_id).env("PATRONUS_DECLENCHEUR", &ctx.trigger);
+    cmd.envs(ctx.vars.iter().map(|(k, v)| (k, v)));
+    for line in ctx.notes.lines() {
+        log(journal, &format!("[patronus] {line}"));
+    }
     if !ctx.files.is_empty() {
         // Une variable d'environnement est limitée en taille : la liste complète est dans un fichier.
         cmd.env("PATRONUS_FICHIERS", capped_list(&ctx.files, MAX_FILES_IN_ENV));
@@ -405,7 +414,7 @@ mod tests {
     }
 
     fn ctx() -> Context {
-        Context { trigger: "à la main".into(), files: vec![] }
+        Context { trigger: "à la main".into(), files: vec![], ..Default::default() }
     }
 
     #[test]
@@ -481,7 +490,11 @@ mod tests {
     fn changed_files_are_passed_to_the_script() {
         let dir = test_dir("exec-files");
         let t = script_task(Shell::Cmd, "echo %PATRONUS_FICHIERS%", &dir);
-        let c = Context { trigger: "fichiers".into(), files: vec![PathBuf::from(r"C:\dev\northwind\a.md")] };
+        let c = Context {
+            trigger: "fichiers".into(),
+            files: vec![PathBuf::from(r"C:\dev\northwind\a.md")],
+            ..Default::default()
+        };
         let out = run_script("e", &t, &c, &dir.join("j.txt"), &AtomicBool::new(false));
         assert!(out.summary.contains("northwind"), "{}", out.summary);
     }
@@ -496,7 +509,7 @@ mod tests {
             &dir,
         );
         let files: Vec<PathBuf> = (0..500).map(|i| PathBuf::from(format!(r"C:\dev\northwind\f{i}.txt"))).collect();
-        let c = Context { trigger: "fichiers".into(), files };
+        let c = Context { trigger: "fichiers".into(), files, ..Default::default() };
         let out = run_script("e", &t, &c, &dir.join("j.txt"), &AtomicBool::new(false));
         assert_eq!(out.status, Status::Reussie, "{}", out.summary);
         let lines: Vec<&str> = out.summary.lines().collect();

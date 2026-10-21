@@ -90,6 +90,40 @@ pub enum Trigger {
     Intervalle { toutes_les_minutes: u32 },
     /// Un fichier modifié dans un dossier.
     Fichiers { fichiers: FileWatch },
+    /// La branche d'un dépôt distant avance (nouveau commit, PR fusionnée). Le dépôt est celui de la tâche.
+    Branche { branche_distante: RemoteBranch },
+}
+
+/// Branche distante surveillée : lue par `git ls-remote` toutes les `toutes_les_minutes` minutes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RemoteBranch {
+    pub branche: String,
+    #[serde(default = "default_remote")]
+    pub distant: String,
+    #[serde(default = "default_poll")]
+    pub toutes_les_minutes: u32,
+    /// Champs inconnus (écrits par une version plus récente), gardés tels quels.
+    #[serde(flatten)]
+    pub autres: BTreeMap<String, Value>,
+}
+
+fn default_remote() -> String {
+    "origin".into()
+}
+
+fn default_poll() -> u32 {
+    5
+}
+
+impl RemoteBranch {
+    pub fn new(branche: &str) -> RemoteBranch {
+        RemoteBranch {
+            branche: branche.into(),
+            distant: default_remote(),
+            toutes_les_minutes: default_poll(),
+            autres: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -406,6 +440,19 @@ impl Task {
                         }
                     }
                 }
+                Trigger::Branche { branche_distante: b } => {
+                    if self.depot.is_none() {
+                        out.push(
+                            "Une branche distante se surveille dans le dépôt de la tâche : choisir un dépôt.".into(),
+                        );
+                    }
+                    if b.branche.trim().is_empty() || b.distant.trim().is_empty() {
+                        out.push("La branche distante surveillée n'est pas indiquée.".into());
+                    }
+                    if b.toutes_les_minutes == 0 {
+                        out.push("Une branche distante se relit au plus toutes les minutes.".into());
+                    }
+                }
             }
         }
         out
@@ -542,6 +589,11 @@ fn explain_triggers(text: &str) -> Option<String> {
     struct FichiersShape {
         fichiers: FileWatch,
     }
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    struct BrancheShape {
+        branche_distante: RemoteBranch,
+    }
     let v: Value = serde_json::from_str(text).ok()?;
     for (i, t) in v["declencheurs"].as_array()?.iter().enumerate() {
         if serde_json::from_value::<Trigger>(t.clone()).is_ok() {
@@ -554,10 +606,12 @@ fn explain_triggers(text: &str) -> Option<String> {
             serde_json::from_value::<IntervalleShape>(t.clone()).err()
         } else if t.get("fichiers").is_some() {
             serde_json::from_value::<FichiersShape>(t.clone()).err()
+        } else if t.get("branche_distante").is_some() {
+            serde_json::from_value::<BrancheShape>(t.clone()).err()
         } else {
             let keys: Vec<&str> = t.as_object().map(|o| o.keys().map(String::as_str).collect()).unwrap_or_default();
             return Some(format!(
-                "déclencheur n° {n} inconnu ({}) : attendu heure, toutes_les_minutes ou fichiers",
+                "déclencheur n° {n} inconnu ({}) : attendu heure, toutes_les_minutes, fichiers ou branche_distante",
                 keys.join(", ")
             ));
         };
