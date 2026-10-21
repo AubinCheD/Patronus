@@ -65,8 +65,19 @@ enum Act {
     Command(Command),
 }
 
+/// Ce qu'il faut pour ouvrir la fenêtre.
+pub struct Options {
+    pub data_dir: PathBuf,
+    pub state: State,
+    /// Problèmes déjà relevés (réglages illisibles…), affichés dès l'ouverture.
+    pub problems: Vec<String>,
+    /// Essais : ni notification Windows, ni Planificateur, ni registre.
+    pub quiet: bool,
+}
+
 pub struct App {
     engine: Engine,
+    quiet: bool,
     data_dir: PathBuf,
     state: State,
     shortcuts: Shortcuts,
@@ -91,7 +102,12 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, data_dir: PathBuf, state: State, mut problems: Vec<String>) -> App {
+    pub fn new(cc: &eframe::CreationContext<'_>, data_dir: PathBuf, state: State, problems: Vec<String>) -> App {
+        App::with(cc, Options { data_dir, state, problems, quiet: false })
+    }
+
+    pub fn with(cc: &eframe::CreationContext<'_>, opts: Options) -> App {
+        let Options { data_dir, state, mut problems, quiet } = opts;
         let (shortcuts, sp) = Shortcuts::from_saved(&state.raccourcis);
         problems.extend(sp);
         let mut engine = Engine::open(&data_dir, now());
@@ -101,6 +117,7 @@ impl App {
         let palette = crate::theme::current(&cc.egui_ctx);
         let mut app = App {
             engine,
+            quiet,
             data_dir,
             state,
             shortcuts,
@@ -138,6 +155,16 @@ impl App {
             _ => {}
         }
         app
+    }
+
+    /// La tâche sur laquelle la boîte est filtrée.
+    pub fn inbox_filter(&self) -> Option<&str> {
+        self.filter_task.as_deref()
+    }
+
+    /// Le moteur (lecture), pour les tests et les vues.
+    pub fn engine(&self) -> &Engine {
+        &self.engine
     }
 
     fn save_state(&mut self) {
@@ -403,69 +430,81 @@ impl App {
                 } else {
                     Color32::TRANSPARENT
                 });
-                let resp = frame
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        match &l.task {
-                            Err(why) => {
-                                ui.label(RichText::new(id).strong());
-                                ui.label(RichText::new(format!("illisible : {why}")).color(p.danger).small());
-                            }
-                            Ok(task) => {
-                                ui.horizontal(|ui| {
-                                    let mut active = task.active;
-                                    if ui.checkbox(&mut active, "").on_hover_text("Active (sinon en pause)").changed() {
-                                        self.acts.push(Act::Toggle(id.clone(), active));
-                                    }
-                                    let name = RichText::new(&task.nom).strong();
-                                    ui.label(if task.active { name } else { name.color(p.text_dim) });
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        if self.engine.is_running(id) {
-                                            if ui.small_button("■").on_hover_text("Arrêter").clicked() {
-                                                self.acts.push(Act::Stop(id.clone()));
-                                            }
-                                            ui.spinner();
-                                        } else if ui.small_button("▶").on_hover_text("Lancer maintenant").clicked() {
-                                            self.acts.push(Act::Run(id.clone()));
+                // Ligne cliquable enregistrée sous ses enfants : les boutons gardent leurs clics.
+                let resp = ui
+                    .scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
+                        // Texte non sélectionnable : un clic sur le nom sélectionne la ligne.
+                        ui.style_mut().interaction.selectable_labels = false;
+                        frame.show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            match &l.task {
+                                Err(why) => {
+                                    ui.label(RichText::new(id).strong());
+                                    ui.label(RichText::new(format!("illisible : {why}")).color(p.danger).small());
+                                }
+                                Ok(task) => {
+                                    ui.horizontal(|ui| {
+                                        let mut active = task.active;
+                                        if ui
+                                            .checkbox(&mut active, "")
+                                            .on_hover_text("Active (sinon en pause)")
+                                            .changed()
+                                        {
+                                            self.acts.push(Act::Toggle(id.clone(), active));
                                         }
-                                        if ui.small_button("✏").on_hover_text("Modifier").clicked() {
-                                            self.acts.push(Act::Edit(id.clone()));
+                                        let name = RichText::new(&task.nom).strong();
+                                        ui.label(if task.active { name } else { name.color(p.text_dim) });
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            if self.engine.is_running(id) {
+                                                if ui.small_button("■").on_hover_text("Arrêter").clicked() {
+                                                    self.acts.push(Act::Stop(id.clone()));
+                                                }
+                                                ui.spinner();
+                                            } else if ui.small_button("▶").on_hover_text("Lancer maintenant").clicked()
+                                            {
+                                                self.acts.push(Act::Run(id.clone()));
+                                            }
+                                            if ui.small_button("✏").on_hover_text("Modifier").clicked() {
+                                                self.acts.push(Act::Edit(id.clone()));
+                                            }
+                                        });
+                                    });
+                                    let problems = task.validate();
+                                    if !problems.is_empty() {
+                                        ui.label(RichText::new(format!("⚠ {}", problems[0])).color(p.warn).small());
+                                    }
+                                    let triggers: Vec<String> = task.declencheurs.iter().map(describe).collect();
+                                    let triggers = if triggers.is_empty() {
+                                        "à la main".to_string()
+                                    } else {
+                                        triggers.join(" ; ")
+                                    };
+                                    ui.label(RichText::new(triggers).small().color(p.text_dim));
+                                    ui.horizontal(|ui| {
+                                        if let Some(r) = self.engine.last_run(id) {
+                                            dot(ui, p.status(r.statut), 3.5);
+                                            ui.label(
+                                                RichText::new(format!("{} {}", r.statut.label(), fmt_when(r.debut)))
+                                                    .small()
+                                                    .color(p.text_dim),
+                                            );
+                                        }
+                                        if let Some(at) = self.engine.next_run(id) {
+                                            ui.label(
+                                                RichText::new(format!("· prochaine {}", fmt_when(at)))
+                                                    .small()
+                                                    .color(p.text_dim),
+                                            );
+                                        }
+                                        if self.engine.is_pending(id) {
+                                            ui.label(RichText::new("· relance en attente").small().color(p.warn));
                                         }
                                     });
-                                });
-                                let problems = task.validate();
-                                if !problems.is_empty() {
-                                    ui.label(RichText::new(format!("⚠ {}", problems[0])).color(p.warn).small());
                                 }
-                                let triggers: Vec<String> = task.declencheurs.iter().map(describe).collect();
-                                let triggers =
-                                    if triggers.is_empty() { "à la main".to_string() } else { triggers.join(" ; ") };
-                                ui.label(RichText::new(triggers).small().color(p.text_dim));
-                                ui.horizontal(|ui| {
-                                    if let Some(r) = self.engine.last_run(id) {
-                                        dot(ui, p.status(r.statut), 3.5);
-                                        ui.label(
-                                            RichText::new(format!("{} {}", r.statut.label(), fmt_when(r.debut)))
-                                                .small()
-                                                .color(p.text_dim),
-                                        );
-                                    }
-                                    if let Some(at) = self.engine.next_run(id) {
-                                        ui.label(
-                                            RichText::new(format!("· prochaine {}", fmt_when(at)))
-                                                .small()
-                                                .color(p.text_dim),
-                                        );
-                                    }
-                                    if self.engine.is_pending(id) {
-                                        ui.label(RichText::new("· relance en attente").small().color(p.warn));
-                                    }
-                                });
                             }
-                        }
+                        });
                     })
                     .response;
-                let resp = resp.interact(egui::Sense::click());
                 if resp.clicked() {
                     self.selected_task = Some(id.clone());
                     self.filter_task = Some(id.clone());
@@ -512,36 +551,40 @@ impl App {
             ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 for r in &runs {
                     let selected = self.selected_run.as_deref() == Some(r.id.as_str());
-                    let resp = egui::Frame::new()
-                        .inner_margin(6.0)
-                        .corner_radius(4.0)
-                        .fill(if selected { p.selection } else { Color32::TRANSPARENT })
-                        .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.horizontal(|ui| {
-                                if r.statut == Status::EnCours {
-                                    ui.spinner();
-                                } else {
-                                    dot(ui, p.status(r.statut), 5.0);
-                                }
-                                let name = RichText::new(&r.tache_nom);
-                                ui.label(if r.lu { name } else { name.strong() });
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    ui.label(RichText::new(fmt_when(r.debut)).small().color(p.text_dim));
+                    let frame = egui::Frame::new().inner_margin(6.0).corner_radius(4.0).fill(if selected {
+                        p.selection
+                    } else {
+                        Color32::TRANSPARENT
+                    });
+                    let resp = ui
+                        .scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
+                            ui.style_mut().interaction.selectable_labels = false;
+                            frame.show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.horizontal(|ui| {
+                                    if r.statut == Status::EnCours {
+                                        ui.spinner();
+                                    } else {
+                                        dot(ui, p.status(r.statut), 5.0);
+                                    }
+                                    let name = RichText::new(&r.tache_nom);
+                                    ui.label(if r.lu { name } else { name.strong() });
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.label(RichText::new(fmt_when(r.debut)).small().color(p.text_dim));
+                                    });
                                 });
+                                ui.label(
+                                    RichText::new(format!("{} · {}", r.statut.label(), r.declencheur))
+                                        .small()
+                                        .color(p.status(r.statut)),
+                                );
+                                let first = r.resume.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+                                if !first.is_empty() {
+                                    ui.add(egui::Label::new(RichText::new(first).small().color(p.text_dim)).truncate());
+                                }
                             });
-                            ui.label(
-                                RichText::new(format!("{} · {}", r.statut.label(), r.declencheur))
-                                    .small()
-                                    .color(p.status(r.statut)),
-                            );
-                            let first = r.resume.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
-                            if !first.is_empty() {
-                                ui.add(egui::Label::new(RichText::new(first).small().color(p.text_dim)).truncate());
-                            }
                         })
-                        .response
-                        .interact(egui::Sense::click());
+                        .response;
                     if resp.clicked() {
                         self.acts.push(Act::SelectRun(r.id.clone()));
                     }
@@ -1086,7 +1129,7 @@ impl App {
             let text = format!("{} : {}", r.tache_nom, r.statut.label());
             self.toast(text.clone(), p.status(r.statut));
             let wants = self.engine.task(&r.tache).is_none_or(|t| t.sortie.notification);
-            if self.state.notifications && wants && self.capture.is_none() {
+            if self.state.notifications && wants && self.capture.is_none() && !self.quiet {
                 crate::notify::notify("Patronus", &format!("{text}\n{}", r.resume.lines().next().unwrap_or("")));
             }
         }

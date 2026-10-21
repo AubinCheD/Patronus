@@ -13,7 +13,7 @@ authors = ["Patronus"]
 patronus-core = { path = "crates/patronus-core" }
 
 # UI — rendu glow uniquement, comme Fawkes et DragonTree.
-eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "clipboard"] }
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "clipboard", "accesskit"] }
 egui = "0.37"
 
 serde = { version = "1", features = ["derive"] }
