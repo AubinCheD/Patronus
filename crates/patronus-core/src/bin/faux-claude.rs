@@ -3,7 +3,7 @@
 //! `[tours:N]` N messages, `[ecrire]` crée un fichier, `[cout:X]` annonce X $ en cours de route,
 //! `[budget-cli]` fin « budget atteint », `[erreur]` échec.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::time::Duration;
 
 fn marker(prompt: &str, name: &str) -> Option<String> {
@@ -14,7 +14,18 @@ fn marker(prompt: &str, name: &str) -> Option<String> {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let prompt = args.iter().position(|a| a == "-p").and_then(|i| args.get(i + 1)).cloned().unwrap_or_default();
+    // Comme `claude -p` : la consigne en argument, sinon sur l'entrée standard.
+    let mut prompt = args
+        .iter()
+        .position(|a| a == "-p")
+        .and_then(|i| args.get(i + 1))
+        .filter(|a| !a.starts_with("--"))
+        .cloned()
+        .unwrap_or_default();
+    if prompt.is_empty() {
+        std::io::stdin().read_to_string(&mut prompt).unwrap();
+    }
+    let first_line = prompt.lines().next().unwrap_or("").to_string();
     let tools: Vec<String> = args
         .iter()
         .skip_while(|a| *a != "--allowedTools")
@@ -55,7 +66,7 @@ fn main() {
         "type": "result",
         "subtype": if budget { "error_max_budget_usd" } else { "success" },
         "is_error": budget,
-        "result": format!("Résumé du faux : outils {}", tools.join(" ")),
+        "result": format!("Résumé du faux : outils {} ; consigne : {first_line}", tools.join(" ")),
         "total_cost_usd": 0.0123,
         "usage": {"input_tokens": 100, "cache_read_input_tokens": 900, "output_tokens": 50},
         "session_id": "faux-123"

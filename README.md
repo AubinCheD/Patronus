@@ -112,8 +112,10 @@ enregistre une capture de la fenêtre après 3 s (`PATRONUS_CAPTURE_DELAI`, en s
 | `planning.json` | dernière surveillance des échéances (pour signaler les manquées) |
 | `state.json` | réglages (thème, raccourcis, rétention), versionnés |
 
-Le script reçoit `PATRONUS_TACHE`, `PATRONUS_DECLENCHEUR` et `PATRONUS_FICHIERS` (fichiers modifiés,
-un par ligne).
+Le script reçoit `PATRONUS_TACHE`, `PATRONUS_DECLENCHEUR`, `PATRONUS_FICHIERS` (fichiers modifiés, un
+par ligne, 100 au plus) et `PATRONUS_FICHIERS_LISTE` (chemin de la liste complète). Une session Claude
+reçoit sa consigne sur l'entrée standard (`consigne.txt` dans le dossier de l'exécution), avec au plus
+50 fichiers modifiés cités.
 
 Journal des décisions : [`docs/journal.md`](docs/journal.md). Contrat proposé avec les autres
 modules : [`docs/contrat-local.md`](docs/contrat-local.md).

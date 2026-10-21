@@ -9,7 +9,9 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::exec::{Context, Outcome, log, run_process_with, work_dir};
+use crate::exec::{
+    Context, MAX_FILES_IN_PROMPT, Outcome, capped_list, log, run_process_with, work_dir, write_file_list,
+};
 use crate::run::{Cost, Status, read_lossy};
 use crate::task::Task;
 
@@ -26,9 +28,19 @@ pub const FORBIDDEN_TOOLS: [&str; 6] = [
     "Bash(cargo publish:*)",
 ];
 
-/// L'exécutable de Claude Code : `PATRONUS_CLAUDE` s'il est défini (essais), sinon `claude`.
+/// L'exécutable de Claude Code : `PATRONUS_CLAUDE` s'il est défini (essais), sinon le premier
+/// `claude.exe` ou `claude.cmd` du `PATH` (installation native ou par npm), sinon `claude`.
 pub fn claude_exe() -> PathBuf {
-    std::env::var_os("PATRONUS_CLAUDE").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("claude"))
+    if let Some(p) = std::env::var_os("PATRONUS_CLAUDE") {
+        return PathBuf::from(p);
+    }
+    find_in_path(std::env::var_os("PATH").as_deref()).unwrap_or_else(|| PathBuf::from("claude"))
+}
+
+/// Comme Windows : dossier par dossier dans l'ordre du `PATH`, `.exe` avant `.cmd` dans un même dossier.
+pub fn find_in_path(path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    let dirs: Vec<PathBuf> = path.map(|p| std::env::split_paths(p).collect()).unwrap_or_default();
+    dirs.iter().flat_map(|d| [d.join("claude.exe"), d.join("claude.cmd")]).find(|c| c.is_file())
 }
 
 /// La consigne envoyée : celle de la tâche, complétée par ce qui l'a déclenchée.
@@ -37,18 +49,19 @@ pub fn prompt(task: &Task, ctx: &Context) -> String {
     let mut p = consigne.to_string();
     if !ctx.files.is_empty() {
         p.push_str("\n\nFichiers modifiés qui ont déclenché cette tâche :\n");
-        for f in &ctx.files {
-            p.push_str(&format!("- {}\n", f.display()));
+        for line in capped_list(&ctx.files, MAX_FILES_IN_PROMPT).lines() {
+            p.push_str(&format!("- {line}\n"));
         }
     }
     p
 }
 
-/// Arguments de `claude` pour une tâche.
-pub fn args(task: &Task, ctx: &Context) -> Vec<String> {
+/// Arguments de `claude` pour une tâche. La consigne n'y figure pas : elle passe par l'entrée
+/// standard (ni limite de longueur, ni retour à la ligne refusé vers un `claude.cmd`, ni consigne
+/// prise pour une option).
+pub fn args(task: &Task) -> Vec<String> {
     let c = task.action.claude.clone().unwrap_or_default();
-    let mut a =
-        vec!["-p".to_string(), prompt(task, ctx), "--output-format".into(), "stream-json".into(), "--verbose".into()];
+    let mut a = vec!["-p".to_string(), "--output-format".into(), "stream-json".into(), "--verbose".into()];
     a.push("--allowedTools".into());
     if c.outils.is_empty() {
         a.extend(READ_ONLY_TOOLS.iter().map(|s| s.to_string()));
@@ -182,6 +195,19 @@ pub fn run_claude(
     data_dir: &Path,
     run_id: &str,
 ) -> Outcome {
+    run_claude_with(&claude_exe(), task, ctx, journal, stop, data_dir, run_id)
+}
+
+/// Comme `run_claude`, avec l'exécutable donné (essais : un `claude.cmd`).
+pub fn run_claude_with(
+    exe: &Path,
+    task: &Task,
+    ctx: &Context,
+    journal: &Path,
+    stop: &AtomicBool,
+    data_dir: &Path,
+    run_id: &str,
+) -> Outcome {
     let Some(c) = &task.action.claude else { return Outcome::impossible("La tâche n'a pas de session Claude.") };
     let run_dir = journal.parent().map(Path::to_path_buf).unwrap_or_default();
     log(journal, &format!("[patronus] {} — {}", task.nom, ctx.trigger));
@@ -218,10 +244,18 @@ pub fn run_claude(
         log(journal, &format!("[patronus] {msg}"));
         return Outcome::impossible(msg);
     }
-    let args = args(task, ctx);
-    log(journal, &format!("[patronus] claude {}", args.iter().skip(2).cloned().collect::<Vec<_>>().join(" ")));
-    log(journal, &format!("[patronus] consigne :\n{}\n", prompt(task, ctx)));
-    let mut cmd = Command::new(claude_exe());
+    let args = args(task);
+    let consigne = prompt(task, ctx);
+    log(journal, &format!("[patronus] {} {}", exe.display(), args.join(" ")));
+    log(journal, &format!("[patronus] consigne :\n{consigne}\n"));
+    let consigne_path = run_dir.join("consigne.txt");
+    if let Err(e) = crate::fsutil::write_atomic(&consigne_path, consigne.as_bytes()) {
+        return Outcome::impossible(format!("Consigne non écrite ({}) : {e}", consigne_path.display()));
+    }
+    if !ctx.files.is_empty() {
+        write_file_list(&run_dir, &ctx.files);
+    }
+    let mut cmd = Command::new(exe);
     cmd.args(&args).current_dir(&dir);
     let stream_path = run_dir.join("sortie.jsonl");
     let max = Duration::from_secs(task.garde_fous.duree_max_min as u64 * 60);
@@ -241,7 +275,8 @@ pub fn run_claude(
             _ => None,
         }
     };
-    let (mut status, code) = run_process_with(cmd, journal, Some(&stream_path), stop, max, &mut check);
+    let (mut status, code) =
+        run_process_with(cmd, journal, Some(&stream_path), Some(&consigne_path), stop, max, &mut check);
     let stream = parse_stream(&read_lossy(&stream_path));
     for line in &stream.transcript {
         log(journal, line);
@@ -262,7 +297,7 @@ pub fn run_claude(
     }
     match status {
         Status::Impossible => {
-            summary = format!("Claude Code n'a pas pu être lancé ({}) : voir le journal.", claude_exe().display())
+            summary = format!("Claude Code n'a pas pu être lancé ({}) : voir le journal.", exe.display())
         }
         Status::DureeDepassee => {
             summary = format!("Arrêtée : durée maximale ({} min) dépassée.\n{summary}", task.garde_fous.duree_max_min)
@@ -321,7 +356,7 @@ mod tests {
 
     #[test]
     fn read_only_by_default_and_never_push() {
-        let a = args(&claude_task(), &Context::default());
+        let a = args(&claude_task());
         let allowed = a.iter().position(|x| x == "--allowedTools").unwrap();
         assert_eq!(&a[allowed + 1..allowed + 4], ["Read", "Grep", "Glob"]);
         assert!(a.iter().any(|x| x == "Bash(git push:*)"));
@@ -350,6 +385,24 @@ pas du json
         assert_eq!(s.result.as_deref(), Some("Deux mises à jour mineures."));
         assert_eq!(s.cost, Some(Cost { tokens_entree: 100, tokens_sortie: 25, usd: 0.0421 }));
         assert_eq!(s.transcript[1], r#"→ Read {"file_path":"Cargo.toml"}"#);
+    }
+
+    #[test]
+    fn claude_is_found_like_windows_does() {
+        let base = crate::fsutil::test_dir("claude-path");
+        let (npm, native, both) = (base.join("npm"), base.join("local"), base.join("both"));
+        for d in [&npm, &native, &both] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(npm.join("claude.cmd"), "").unwrap();
+        std::fs::write(native.join("claude.exe"), "").unwrap();
+        std::fs::write(both.join("claude.cmd"), "").unwrap();
+        std::fs::write(both.join("claude.exe"), "").unwrap();
+        let path = |dirs: &[&Path]| std::env::join_paths(dirs).unwrap();
+        assert_eq!(find_in_path(Some(&path(&[&npm, &native]))), Some(npm.join("claude.cmd")), "ordre du PATH");
+        assert_eq!(find_in_path(Some(&path(&[&both]))), Some(both.join("claude.exe")), ".exe avant .cmd");
+        assert_eq!(find_in_path(Some(&path(&[&base]))), None);
+        assert_eq!(find_in_path(None), None);
     }
 
     #[test]

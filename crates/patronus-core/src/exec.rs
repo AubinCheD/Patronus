@@ -49,15 +49,17 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// Lance `cmd`, sortie standard et d'erreur ajoutées au journal, et attend sa fin, l'arrêt demandé
 /// (`stop`) ou la durée maximale. Rend le statut et le code de retour.
 pub fn run_process(cmd: Command, journal: &Path, stop: &AtomicBool, max: Duration) -> (Status, Option<i32>) {
-    run_process_with(cmd, journal, None, stop, max, &mut || None)
+    run_process_with(cmd, journal, None, None, stop, max, &mut || None)
 }
 
-/// Comme `run_process`, la sortie standard pouvant aller dans un fichier à part (`stdout`), et
-/// `check` appelé régulièrement : s'il rend un statut et une raison, le processus est arrêté.
+/// Comme `run_process`, la sortie standard pouvant aller dans un fichier à part (`stdout`), l'entrée
+/// standard venir d'un fichier (`stdin`), et `check` appelé régulièrement : s'il rend un statut et une
+/// raison, le processus est arrêté.
 pub fn run_process_with(
     mut cmd: Command,
     journal: &Path,
     stdout: Option<&Path>,
+    stdin: Option<&Path>,
     stop: &AtomicBool,
     max: Duration,
     check: &mut dyn FnMut() -> Option<(Status, String)>,
@@ -70,7 +72,15 @@ pub fn run_process_with(
             return (Status::Impossible, None);
         }
     };
-    cmd.stdin(Stdio::null()).stdout(Stdio::from(out)).stderr(Stdio::from(err));
+    let input = match stdin.map(std::fs::File::open) {
+        None => Stdio::null(),
+        Some(Ok(f)) => Stdio::from(f),
+        Some(Err(e)) => {
+            log(journal, &format!("[patronus] entrée standard illisible : {e}"));
+            return (Status::Impossible, None);
+        }
+    };
+    cmd.stdin(input).stdout(Stdio::from(out)).stderr(Stdio::from(err));
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -139,6 +149,42 @@ pub fn log(journal: &Path, line: &str) {
     }
 }
 
+/// Fichiers modifiés cités dans une variable d'environnement, et dans la consigne d'une session.
+pub const MAX_FILES_IN_ENV: usize = 100;
+pub const MAX_FILES_IN_PROMPT: usize = 50;
+
+/// Les `max` premiers fichiers, un par ligne, puis « … et N autres » s'il y en a plus.
+pub fn capped_list(files: &[PathBuf], max: usize) -> String {
+    let mut lines: Vec<String> = files.iter().take(max).map(|f| f.display().to_string()).collect();
+    if files.len() > max {
+        lines.push(format!(
+            "… et {} autres ({} au total, liste complète dans fichiers.txt)",
+            files.len() - max,
+            files.len()
+        ));
+    }
+    lines.join(
+        "
+",
+    )
+}
+
+/// Écrit la liste complète des fichiers modifiés dans `fichiers.txt` du dossier de l'exécution.
+pub fn write_file_list(run_dir: &Path, files: &[PathBuf]) -> Option<PathBuf> {
+    let path = run_dir.join("fichiers.txt");
+    let text: Vec<String> = files.iter().map(|f| f.display().to_string()).collect();
+    crate::fsutil::write_atomic(
+        &path,
+        text.join(
+            "
+",
+        )
+        .as_bytes(),
+    )
+    .ok()
+    .map(|_| path)
+}
+
 /// Dossier de travail : celui du script, à défaut le dépôt de la tâche, à défaut le dossier personnel.
 pub fn work_dir(task: &Task, script: Option<&Script>) -> PathBuf {
     script
@@ -204,8 +250,11 @@ pub fn run_script(task_id: &str, task: &Task, ctx: &Context, journal: &Path, sto
     cmd.current_dir(&dir).envs(&script.env);
     cmd.env("PATRONUS_TACHE", task_id).env("PATRONUS_DECLENCHEUR", &ctx.trigger);
     if !ctx.files.is_empty() {
-        let files: Vec<String> = ctx.files.iter().map(|f| f.display().to_string()).collect();
-        cmd.env("PATRONUS_FICHIERS", files.join("\n"));
+        // Une variable d'environnement est limitée en taille : la liste complète est dans un fichier.
+        cmd.env("PATRONUS_FICHIERS", capped_list(&ctx.files, MAX_FILES_IN_ENV));
+        if let Some(list) = journal.parent().and_then(|d| write_file_list(d, &ctx.files)) {
+            cmd.env("PATRONUS_FICHIERS_LISTE", list);
+        }
     }
     let max = Duration::from_secs(task.garde_fous.duree_max_min as u64 * 60);
     let (status, code) = run_process(cmd, journal, stop, max);
@@ -330,5 +379,22 @@ mod tests {
         let c = Context { trigger: "fichiers".into(), files: vec![PathBuf::from(r"C:\dev\northwind\a.md")] };
         let out = run_script("e", &t, &c, &dir.join("j.txt"), &AtomicBool::new(false));
         assert!(out.summary.contains("northwind"), "{}", out.summary);
+    }
+
+    /// Beaucoup de fichiers modifiés : la variable en cite 100, la liste complète est à côté.
+    #[test]
+    fn changed_files_are_capped_in_the_environment() {
+        let dir = test_dir("exec-many-files");
+        let t = script_task(
+            Shell::Powershell,
+            "Write-Output ($env:PATRONUS_FICHIERS -split \"`n\").Count; Get-Content $env:PATRONUS_FICHIERS_LISTE | Measure-Object -Line | ForEach-Object Lines",
+            &dir,
+        );
+        let files: Vec<PathBuf> = (0..500).map(|i| PathBuf::from(format!(r"C:\dev\northwind\f{i}.txt"))).collect();
+        let c = Context { trigger: "fichiers".into(), files };
+        let out = run_script("e", &t, &c, &dir.join("j.txt"), &AtomicBool::new(false));
+        assert_eq!(out.status, Status::Reussie, "{}", out.summary);
+        let lines: Vec<&str> = out.summary.lines().collect();
+        assert_eq!(lines, ["101", "500"], "100 fichiers + la ligne « … et 400 autres », puis la liste complète");
     }
 }

@@ -150,3 +150,58 @@ fn failure_and_missing_branch_say_why() {
     assert_eq!(out.status, Status::Impossible);
     assert!(out.summary.contains("Worktree impossible"), "{}", out.summary);
 }
+
+fn run_ctx(dir: &Path, t: &Task, id: &str, ctx: &Context, exe: Option<&Path>) -> (Outcome, String) {
+    let run_dir = dir.join("donnees").join("executions").join(id);
+    std::fs::create_dir_all(&run_dir).unwrap();
+    let journal = run_dir.join("journal.txt");
+    let stop = AtomicBool::new(false);
+    let out = match exe {
+        Some(exe) => patronus_core::claude::run_claude_with(exe, t, ctx, &journal, &stop, &dir.join("donnees"), id),
+        None => run_claude("revue", t, ctx, &journal, &stop, &dir.join("donnees"), id),
+    };
+    (out, std::fs::read_to_string(&journal).unwrap_or_default())
+}
+
+/// 800 fichiers modifiés : la consigne en cite 50, la liste complète est dans `fichiers.txt`.
+/// (En argument, la ligne de commande dépassait la limite de Windows.)
+#[test]
+fn many_changed_files_are_capped() {
+    let dir = setup("fichiers");
+    let files: Vec<PathBuf> =
+        (0..800).map(|i| PathBuf::from(format!(r"C:\dev\northwind\docs\page-{i:03}.md"))).collect();
+    let ctx = Context { trigger: "800 fichiers modifiés".into(), files };
+    let (out, journal) = run_ctx(&dir, &task("Relis les pages modifiées.", &dir, false), "r9", &ctx, None);
+    assert_eq!(out.status, Status::Reussie, "{journal}");
+    let run_dir = dir.join("donnees/executions/r9");
+    let consigne = std::fs::read_to_string(run_dir.join("consigne.txt")).unwrap();
+    assert!(consigne.contains("page-049.md") && !consigne.contains("page-050.md"), "{consigne}");
+    assert!(consigne.contains("… et 750 autres (800 au total"), "{consigne}");
+    assert_eq!(std::fs::read_to_string(run_dir.join("fichiers.txt")).unwrap().lines().count(), 800);
+}
+
+/// Une consigne qui commence par un tiret n'est pas prise pour une option.
+#[test]
+fn prompt_starting_with_a_dash() {
+    let dir = setup("tiret");
+    let ctx = Context { trigger: "à la main".into(), files: vec![] };
+    let (out, journal) = run_ctx(&dir, &task("-x : ceci n'est pas une option", &dir, false), "r10", &ctx, None);
+    assert_eq!(out.status, Status::Reussie, "{journal}");
+    assert!(out.summary.contains("consigne : -x : ceci n'est pas une option"), "{}", out.summary);
+}
+
+/// Installation de Claude Code par npm : `claude.cmd`. Consigne sur plusieurs lignes et motifs
+/// d'outils (parenthèses, deux-points, astérisques) passent.
+#[test]
+fn cmd_shim_runs_with_a_multiline_prompt() {
+    let dir = setup("cmd");
+    let shim = dir.join("claude.cmd");
+    std::fs::write(&shim, format!("@\"{}\" %*\r\n", env!("CARGO_BIN_EXE_faux-claude"))).unwrap();
+    let mut t = task("Première ligne.\nDeuxième ligne.", &dir, false);
+    t.action.claude.as_mut().unwrap().outils = vec!["Read".into(), "Bash(npm outdated)".into()];
+    let ctx = Context { trigger: "à la main".into(), files: vec![PathBuf::from("docs/guide.md")] };
+    let (out, journal) = run_ctx(&dir, &t, "r11", &ctx, Some(&shim));
+    assert_eq!(out.status, Status::Reussie, "{journal}");
+    assert!(out.summary.contains("outils Read Bash(npm outdated)"), "{}", out.summary);
+    assert!(out.summary.contains("consigne : Première ligne."), "{}", out.summary);
+}
