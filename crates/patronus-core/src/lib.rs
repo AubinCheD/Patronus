@@ -1,7 +1,9 @@
 //! Patronus, sans interface : le format des tâches, leurs déclencheurs, leur exécution et la boîte
 //! de résultats. L'application (`patronus-app`) n'est qu'un affichage par-dessus.
 
+pub mod exec;
 pub mod fsutil;
+pub mod run;
 pub mod schedule;
 pub mod task;
 pub mod watch;
