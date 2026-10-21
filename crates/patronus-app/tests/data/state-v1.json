@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "saved_by": "0.1.0",
+  "theme": "sombre",
+  "raccourcis": { "boite": "Ctrl+I" },
+  "retention_jours": 14,
+  "notifications": false,
+  "taille_fenetre": [1000.0, 700.0],
+  "champ_futur": 42
+}

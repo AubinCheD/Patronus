@@ -327,8 +327,9 @@ impl Engine {
                     log(&self.store.journal_path(run_id), &format!("[patronus] {} fichier(s) modifié(s) pendant l'exécution, ignoré(s)", files.len()));
                     continue;
                 }
+                let base = self.matchers.iter().find(|(tid, _)| *tid == id).map(|(_, m)| m.dossier().to_path_buf()).unwrap_or_default();
                 let trigger = match files.as_slice() {
-                    [one] => format!("fichier modifié : {}", one.display()),
+                    [one] => format!("fichier modifié : {}", one.strip_prefix(&base).unwrap_or(one).display()),
                     many => format!("{} fichiers modifiés", many.len()),
                 };
                 self.launch(&id, Context { trigger, files }, now);
