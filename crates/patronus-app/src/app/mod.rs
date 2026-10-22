@@ -125,6 +125,12 @@ pub struct App {
     quiet: bool,
     /// Coût des sessions du mois, relu toutes les 5 s (barre d'état).
     month_cost: Option<(Instant, f64)>,
+    /// Inscription au démarrage de Windows, lue à la première ouverture des réglages.
+    autostart: Option<patronus_core::autostart::Status>,
+    /// Fermeture demandée alors que des exécutions tournent ou qu'un brouillon n'est pas enregistré.
+    close_dialog: bool,
+    /// Fermeture confirmée (ou sans rien à perdre) : ne plus l'empêcher.
+    closing: bool,
 }
 
 impl App {
@@ -199,6 +205,9 @@ impl App {
             windows_tasks: None,
             quiet,
             month_cost: None,
+            autostart: None,
+            close_dialog: false,
+            closing: false,
         };
         // Essais : la vue à montrer dans la capture.
         match std::env::var("PATRONUS_CAPTURE_VUE").as_deref() {
@@ -612,6 +621,58 @@ impl App {
         }
     }
 
+    /// Ce que la fermeture ferait perdre : exécutions en cours, brouillon non enregistré.
+    fn close_losses(&self, e: &Engine) -> Vec<String> {
+        let mut out = Vec::new();
+        match e.running_count() {
+            0 => {}
+            1 => out.push("1 exécution est en cours : elle sera arrêtée (« interrompue »).".to_string()),
+            n => out.push(format!("{n} exécutions sont en cours : elles seront arrêtées (« interrompues »).")),
+        }
+        if let Some(ed) = self.editor.as_ref().filter(|ed| ed.dirty()) {
+            out.push(format!("Les modifications de « {} » ne sont pas enregistrées.", ed.task.nom));
+        }
+        out
+    }
+
+    /// Fermeture de la fenêtre : demandée alors qu'il y a quelque chose à perdre, elle attend une
+    /// confirmation.
+    fn close_guard(&mut self, ctx: &egui::Context, e: &mut Engine) {
+        if ctx.input(|i| i.viewport().close_requested()) && !self.closing {
+            if self.close_losses(e).is_empty() {
+                self.closing = true;
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.close_dialog = true;
+            }
+        }
+        if !self.close_dialog {
+            return;
+        }
+        let losses = self.close_losses(e);
+        let (mut quit, mut cancel) = (false, false);
+        egui::Modal::new(egui::Id::unique("fermeture")).show(ctx, |ui| {
+            ui.set_width(420.0);
+            ui.heading("Quitter Patronus ?");
+            for l in &losses {
+                ui.label(l);
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let label = if e.running_count() > 0 { "Arrêter et quitter" } else { "Quitter" };
+                quit = ui.button(label).clicked();
+                cancel = ui.button("Annuler").clicked();
+            });
+        });
+        if quit {
+            self.close_dialog = false;
+            self.closing = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else if cancel {
+            self.close_dialog = false;
+        }
+    }
+
     /// Confirmation avant d'abandonner les modifications de l'éditeur.
     fn confirm_window(&mut self, ctx: &egui::Context, e: &mut Engine) {
         if self.confirm.is_none() {
@@ -671,6 +732,7 @@ impl App {
             return;
         }
         *requested = true;
+        self.closing = true;
         let (path, ctx2) = (path.clone(), ctx.clone());
         ctx.request_screenshot(move |img| {
             let png = crate::capture::png(img.size[0] as u32, img.size[1] as u32, img.as_raw());
@@ -717,6 +779,7 @@ impl eframe::App for App {
         self.command_palette(&ctx, &e);
         self.confirm_window(&ctx, &mut e);
         self.run_dialog_window(&ctx);
+        self.close_guard(&ctx, &mut e);
         // Exécution choisie pendant qu'elle tournait : lue à sa fin si elle est toujours affichée.
         if let Some(id) = self.read_when_done.clone()
             && let Some(r) = e.runs.iter().find(|r| r.id == id)

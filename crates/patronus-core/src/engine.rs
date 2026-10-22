@@ -175,6 +175,8 @@ pub struct Engine {
     maintenance_due: bool,
     /// Fermeture demandée : plus aucun départ.
     shutting_down: bool,
+    /// Exécutions coupées par la fermeture (et non arrêtées à la main avant) : « interrompues ».
+    cut_by_shutdown: BTreeSet<String>,
     /// Augmente à chaque relecture des tâches (l'interface resynchronise alors le Planificateur).
     pub tasks_version: u64,
     /// Branches distantes : prochain relevé, relevés en cours, résultats.
@@ -238,6 +240,7 @@ impl Engine {
             last_refresh: Instant::now(),
             maintenance_due: !opts.headless,
             shutting_down: false,
+            cut_by_shutdown: BTreeSet::new(),
             tasks_version: 0,
             branch_next: HashMap::new(),
             branch_busy: BTreeSet::new(),
@@ -509,6 +512,11 @@ impl Engine {
                 run.worktree = outcome.worktree;
                 run.session_claude = outcome.session;
                 run.fin = Some(now.max(run.debut));
+                if run.statut == Status::Arretee && self.cut_by_shutdown.contains(&run.id) {
+                    run.statut = Status::Interrompue;
+                    let rest = run.resume.strip_prefix("Arrêtée à la main.").unwrap_or(&run.resume).trim_start();
+                    run.resume = format!("Interrompue : Patronus a été fermé.\n{rest}").trim_end().to_string();
+                }
                 let run = run.clone();
                 if let Some(c) = run.cout.as_ref().filter(|c| c.usd > 0.0) {
                     self.add_cost(&run.id, run.debut, c.usd);
@@ -1109,6 +1117,8 @@ impl Engine {
     /// À la fermeture : arrête ce qui tourne, attend un peu, et note l'heure.
     pub fn shutdown(&mut self, now: NaiveDateTime, wait: Duration) {
         self.shutting_down = true;
+        let cut = self.active.values().filter(|a| !a.stop.load(Ordering::Relaxed)).map(|a| a.run_id.clone());
+        self.cut_by_shutdown.extend(cut);
         self.stop_all();
         let deadline = std::time::Instant::now() + wait;
         while !self.active.is_empty() && std::time::Instant::now() < deadline {
@@ -1785,6 +1795,28 @@ mod tests {
         e.launch(&id, by_hand(), now);
         wait_idle(&mut e, now);
         assert_eq!(e.runs[0].statut, Status::Reussie);
+    }
+
+    /// Fermer Patronus coupe les exécutions : « interrompue », pas « arrêtée » (sauf celle qu'on
+    /// avait arrêtée à la main juste avant).
+    #[test]
+    fn shutdown_interrupts_running_runs() {
+        let dir = test_dir("engine-fermeture");
+        let (exec, _) = fake(Duration::from_secs(20));
+        let now = at(21, 10, 0);
+        let mut e = Engine::open_with(&dir, now, Some(exec), Duration::from_millis(200));
+        let a = e.save_task(Some("a"), &task("x", vec![]), now).unwrap();
+        let b = e.save_task(Some("b"), &task("x", vec![]), now).unwrap();
+        e.launch(&a, by_hand(), now);
+        e.launch(&b, by_hand(), now);
+        e.stop(&b);
+        e.shutdown(now, Duration::from_secs(5));
+        let status = |id: &str| e.runs.iter().find(|r| r.tache == id).unwrap().clone();
+        assert_eq!(status(&a).statut, Status::Interrompue);
+        assert!(status(&a).resume.starts_with("Interrompue : Patronus a été fermé."), "{}", status(&a).resume);
+        assert_eq!(status(&b).statut, Status::Arretee);
+        let reopened = Engine::open(&dir, at(21, 10, 1));
+        assert_eq!(reopened.runs.iter().find(|r| r.tache == a).unwrap().statut, Status::Interrompue, "enregistré");
     }
 
     /// `planifie` : la dernière échéance à tenir, ou pourquoi il n'y a rien à faire.

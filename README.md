@@ -88,6 +88,10 @@ Premier jet (octobre 2026) :
 - actions sur un résultat, toujours après confirmation : appliquer le diff d'une session dans la
   copie de travail (sans commit), supprimer son worktree, reprendre la session (`claude --resume`,
   dans Windows Terminal ou PowerShell), copier le résumé ;
+- fermer la fenêtre pendant une exécution, ou avec un brouillon non enregistré, demande confirmation ;
+  une exécution coupée ainsi est « interrompue : Patronus a été fermé » ;
+- lancement à l'ouverture de session (réglages, décoché par défaut) : clé `Run` du compte, fenêtre
+  réduite (`--reduit`) ;
 - notification Windows à la fin, thèmes, raccourcis réglables.
 
 ### Premier essai réel d'une session Claude
@@ -140,6 +144,7 @@ cargo test
 
 ```powershell
 target\release\patronus.exe                  # la fenêtre
+target\release\patronus.exe --reduit         # la fenêtre, réduite dans la barre des tâches
 target\release\patronus.exe lancer <tâche>   # exécute une tâche sans fenêtre, résultat dans la boîte
 # depuis un terminal, pour attendre la fin et lire le code de retour :
 Start-Process -Wait -NoNewWindow target\release\patronus.exe -ArgumentList 'lancer','<tâche>'

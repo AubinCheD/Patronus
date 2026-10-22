@@ -2,6 +2,7 @@
 //! de résultats. L'application (`patronus-app`) n'est qu'un affichage par-dessus.
 
 pub mod actions;
+pub mod autostart;
 pub mod claude;
 pub mod engine;
 pub mod exec;

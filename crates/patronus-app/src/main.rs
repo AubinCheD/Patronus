@@ -31,14 +31,15 @@ fn single_instance(data_dir: &Path) -> bool {
 /// Ce que demande la ligne de commande.
 #[derive(Debug, PartialEq)]
 enum Cli {
-    Window,
+    /// La fenêtre ; réduite (`--reduit`) au lancement avec Windows.
+    Window { minimized: bool },
     /// `lancer <tâche>` : exécute la tâche sans fenêtre et attend sa fin.
     Run(String),
     /// `planifie <tâche>` : lancé par le Planificateur de Windows à une échéance.
     Planned(String),
 }
 
-/// `patronus [--donnees <dossier>] [lancer <tâche> | planifie <tâche>]`.
+/// `patronus [--donnees <dossier>] [--reduit | lancer <tâche> | planifie <tâche>]`.
 fn parse(args: &[String]) -> Result<(Option<PathBuf>, Cli), String> {
     let mut data_dir = None;
     let mut rest = Vec::new();
@@ -50,7 +51,8 @@ fn parse(args: &[String]) -> Result<(Option<PathBuf>, Cli), String> {
         }
     }
     let cli = match rest.as_slice() {
-        [] => Cli::Window,
+        [] => Cli::Window { minimized: false },
+        ["--reduit"] => Cli::Window { minimized: true },
         ["lancer", id] => Cli::Run(id.to_string()),
         ["planifie", id] => Cli::Planned(id.to_string()),
         _ => return Err(format!("arguments inconnus : {}", rest.join(" "))),
@@ -165,7 +167,7 @@ fn main() -> ExitCode {
     let (dir, cli) = match parse(&args) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("{e}\nUsage : patronus [--donnees <dossier>] [lancer <tâche>]");
+            eprintln!("{e}\nUsage : patronus [--donnees <dossier>] [--reduit | lancer <tâche>]");
             return ExitCode::from(2);
         }
     };
@@ -173,7 +175,7 @@ fn main() -> ExitCode {
     match cli {
         Cli::Run(id) => run_cli(&data_dir, &id),
         Cli::Planned(id) => run_planned(&data_dir, &id),
-        Cli::Window => match gui(data_dir) {
+        Cli::Window { minimized } => match gui(data_dir, minimized) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("{e}");
@@ -183,12 +185,12 @@ fn main() -> ExitCode {
     }
 }
 
-fn gui(data_dir: PathBuf) -> eframe::Result {
+fn gui(data_dir: PathBuf, minimized: bool) -> eframe::Result {
     if !single_instance(&data_dir) {
         eprintln!("Patronus tourne déjà sur {}.", data_dir.display());
         return Ok(());
     }
-    let result = patronus_app::run(data_dir);
+    let result = patronus_app::run(data_dir, minimized);
     patronus_app::notify::cleanup();
     result
 }
@@ -210,7 +212,11 @@ mod tests {
 
     #[test]
     fn command_line() {
-        assert_eq!(parse(&[]), Ok((None, Cli::Window)));
+        assert_eq!(parse(&[]), Ok((None, Cli::Window { minimized: false })));
+        assert_eq!(
+            parse(&args(&["--donnees", r"C:\essai", "--reduit"])),
+            Ok((Some(PathBuf::from(r"C:\essai")), Cli::Window { minimized: true }))
+        );
         assert_eq!(parse(&args(&["lancer", "revue"])), Ok((None, Cli::Run("revue".into()))));
         assert_eq!(
             parse(&args(&["--donnees", r"C:\essai", "lancer", "revue"])),

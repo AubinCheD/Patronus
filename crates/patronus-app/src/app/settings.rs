@@ -43,6 +43,9 @@ impl App {
                     }
                 });
                 ui.end_row();
+                ui.label("Démarrage");
+                self.autostart_row(ui, e);
+                ui.end_row();
                 ui.label("Notifications");
                 changed |= ui.checkbox(&mut self.state.notifications, "à la fin d'une exécution").changed();
                 ui.end_row();
@@ -100,6 +103,48 @@ impl App {
             self.apply_theme(ctx);
             self.save_state(e);
         }
+    }
+
+    /// *Lancer Patronus à l'ouverture de session* : clé `Run` du compte (rien en essai).
+    fn autostart_row(&mut self, ui: &mut egui::Ui, e: &mut Engine) {
+        use patronus_core::autostart::{self, Status};
+        let quiet = self.quiet;
+        let data_dir = self.data_dir.clone();
+        let status =
+            self.autostart.get_or_insert_with(|| if quiet { Status::Off } else { autostart::status(&data_dir) });
+        let mut on = *status == Status::On;
+        ui.vertical(|ui| {
+            let r = ui
+                .checkbox(&mut on, "Lancer Patronus à l'ouverture de session (fenêtre réduite)")
+                .on_hover_text("Clé Run du compte Windows, sans droit administrateur");
+            match &*status {
+                Status::OtherCommand(cmd) => {
+                    ui.label(
+                        RichText::new(format!("Inscrit pour un autre exécutable : {cmd}. Cocher pour le remplacer."))
+                            .small()
+                            .color(self.palette.warn),
+                    );
+                }
+                Status::DisabledByUser => {
+                    ui.label(
+                        RichText::new("Désactivé dans le Gestionnaire des tâches. Cocher pour le réactiver.")
+                            .small()
+                            .color(self.palette.warn),
+                    );
+                }
+                Status::On | Status::Off => {}
+            }
+            if r.changed() {
+                if quiet {
+                    *status = if on { Status::On } else { Status::Off };
+                } else {
+                    if let Err(err) = autostart::set(&data_dir, on) {
+                        e.problem(format!("Lancement à l'ouverture de session : {err}"));
+                    }
+                    *status = autostart::status(&data_dir);
+                }
+            }
+        });
     }
 
     pub(super) fn apply_theme(&mut self, ctx: &egui::Context) {

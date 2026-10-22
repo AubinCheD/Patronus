@@ -14,8 +14,9 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 pub const APP_TITLE: &str = "Patronus";
 
-/// Ouvre la fenêtre sur le dossier de données `data_dir`.
-pub fn run(data_dir: std::path::PathBuf) -> eframe::Result {
+/// Ouvre la fenêtre sur le dossier de données `data_dir` ; réduite dans la barre des tâches si
+/// `minimized` (lancement avec Windows).
+pub fn run(data_dir: std::path::PathBuf, minimized: bool) -> eframe::Result {
     let (st, problems) = state::load(&data_dir);
     let viewport = egui::ViewportBuilder::default()
         .with_title(APP_TITLE)
@@ -31,6 +32,10 @@ pub fn run(data_dir: std::path::PathBuf) -> eframe::Result {
                 && let RawWindowHandle::Win32(w) = h.as_raw()
             {
                 notify::init(w.hwnd.get());
+            }
+            if minimized {
+                // Appliqué à la première image.
+                cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
             }
             Ok(Box::new(app::App::new(cc, data_dir, st, problems)))
         }),

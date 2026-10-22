@@ -182,3 +182,9 @@ sur ses propres écritures), dix importants, douze mineurs : tous retenus (A1 à
   son exécution ; une exécution comptée deux fois ne l'est qu'une. Le plafond, lui, est un réglage du
   moteur (`planning.json`) pour que `lancer` et `planifie` l'appliquent. Une session part si le coût
   du mois plus son propre budget reste sous le plafond : son budget est compté comme déjà dépensé.
+- **C4** : l'inscription au démarrage reprend le procédé de Fawkes (valeur de la clé `Run` du compte,
+  état « désactivé dans le Gestionnaire des tâches » reconnu) ; son nom est celui du dossier du
+  Planificateur, et la commande nomme le dossier de données quand ce n'est pas celui par défaut.
+  Testée sur une clé d'essai uniquement : la vraie clé `Run` du poste n'a pas été touchée. `--reduit`
+  vérifié en vrai (fenêtre d'essai réduite au lancement). La confirmation de fermeture couvre aussi
+  le brouillon non enregistré de l'éditeur, qui se perdait sinon en silence.

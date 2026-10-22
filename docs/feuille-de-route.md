@@ -31,7 +31,7 @@ spécification au plan `docs/superpowers/plans/2026-10-21-passe-complete.md`. Le
 | C1 | Actions sur un résultat : appliquer le diff, worktree, reprendre la session | fait |
 | C2 | Modèles de tâches | fait |
 | C3 | Budget mensuel des sessions Claude | fait |
-| C4 | Démarrage avec Windows, fermeture pendant une exécution | à faire |
+| C4 | Démarrage avec Windows, fermeture pendant une exécution | fait |
 | C5 | Résumé et liens écrits par le script | à faire |
 | C6 | Petits plus : pause générale, recherche, dupliquer, zoom, icône | à faire |
 
