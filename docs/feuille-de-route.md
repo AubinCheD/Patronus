@@ -30,7 +30,7 @@ spécification au plan `docs/superpowers/plans/2026-10-21-passe-complete.md`. Le
 | B4 | Premier essai réel de l'action Claude | préparé (README), par l'utilisateur |
 | C1 | Actions sur un résultat : appliquer le diff, worktree, reprendre la session | fait |
 | C2 | Modèles de tâches | fait |
-| C3 | Budget mensuel des sessions Claude | à faire |
+| C3 | Budget mensuel des sessions Claude | fait |
 | C4 | Démarrage avec Windows, fermeture pendant une exécution | à faire |
 | C5 | Résumé et liens écrits par le script | à faire |
 | C6 | Petits plus : pause générale, recherche, dupliquer, zoom, icône | à faire |
@@ -296,8 +296,10 @@ Claude Code et à la CLI installée (2.1.306). Les constats sont repris ici avec
 
 ### C3. Budget mensuel des sessions Claude
 
-- Réglage *Budget mensuel des sessions Claude* (aucun par défaut).
-- Coût du mois tenu dans `planning.json`, indépendamment de la rétention des résultats.
+- Réglage *Budget mensuel des sessions Claude* (aucun par défaut), gardé dans `planning.json` (la
+  ligne de commande et le Planificateur l'appliquent aussi).
+- Coût du mois tenu dans `couts\<année-mois>.txt` (une ligne par exécution, ajoutée par le processus
+  qui l'a menée), indépendamment de la rétention des résultats.
 - Une session dont le budget ferait dépasser le budget mensuel ne part pas : entrée « impossible :
   budget mensuel atteint (x $ sur y $) ».
 - Barre d'état : « Ce mois : 1,23 $ (équivalent API) ».

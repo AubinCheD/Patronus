@@ -26,6 +26,23 @@ impl App {
                     .add(egui::DragValue::new(&mut self.state.retention_jours).range(1..=3650).suffix(" jours"))
                     .changed();
                 ui.end_row();
+                ui.label("Budget mensuel");
+                ui.horizontal(|ui| {
+                    let mut usd = e.monthly_budget().unwrap_or(0.0);
+                    let r = ui
+                        .add(egui::DragValue::new(&mut usd).range(0.0..=10_000.0).speed(0.5).max_decimals(2).suffix(" $"))
+                        .on_hover_text(
+                            "Plafond des sessions Claude sur le mois, en équivalent API : une session qui risquerait de \
+                             le dépasser ne part pas. 0 : aucun.",
+                        );
+                    if r.changed() {
+                        e.set_monthly_budget(Some(usd));
+                    }
+                    if usd == 0.0 {
+                        ui.label(RichText::new("aucun").small().color(self.palette.text_dim));
+                    }
+                });
+                ui.end_row();
                 ui.label("Notifications");
                 changed |= ui.checkbox(&mut self.state.notifications, "à la fin d'une exécution").changed();
                 ui.end_row();

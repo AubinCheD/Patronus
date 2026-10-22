@@ -176,3 +176,9 @@ sur ses propres écritures), dix importants, douze mineurs : tous retenus (A1 à
 - **B3, décision** : `schtasks` ne sait pas supprimer un dossier du Planificateur ; quand il n'y a
   plus de tâche Patronus, le dossier vide est supprimé par l'interface COM du Planificateur
   (PowerShell), pour ne rien laisser derrière.
+- **C3, décision** : le coût du mois n'est pas gardé dans `planning.json` (réécrit en entier par la
+  fenêtre, que la ligne de commande ou le Planificateur pourraient écraser en même temps) mais dans
+  un registre `couts\2026-10.txt` où chaque processus ajoute une ligne « exécution, coût » à la fin de
+  son exécution ; une exécution comptée deux fois ne l'est qu'une. Le plafond, lui, est un réglage du
+  moteur (`planning.json`) pour que `lancer` et `planifie` l'appliquent. Une session part si le coût
+  du mois plus son propre budget reste sous le plafond : son budget est compté comme déjà dépensé.

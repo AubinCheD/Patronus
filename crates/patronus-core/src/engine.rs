@@ -30,6 +30,9 @@ pub struct Planning {
     /// Dernier commit vu de chaque branche distante surveillée (clé `<tâche>#<n° du déclencheur>`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub branches: BTreeMap<String, String>,
+    /// Plafond mensuel des sessions Claude, en dollars (équivalent API) ; aucun si absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_mensuel_usd: Option<f64>,
     #[serde(flatten)]
     pub autres: BTreeMap<String, serde_json::Value>,
 }
@@ -425,7 +428,7 @@ impl Engine {
             Some(t) => {
                 let problems = t.validate();
                 if problems.is_empty() {
-                    Ok(t.clone())
+                    self.monthly_budget_check(t, now).map(|_| t.clone())
                 } else {
                     Err(format!("Tâche invalide : {}", problems.join(" ")))
                 }
@@ -507,6 +510,9 @@ impl Engine {
                 run.session_claude = outcome.session;
                 run.fin = Some(now.max(run.debut));
                 let run = run.clone();
+                if let Some(c) = run.cout.as_ref().filter(|c| c.usd > 0.0) {
+                    self.add_cost(&run.id, run.debut, c.usd);
+                }
                 if let Err(e) = self.store.save(&run) {
                     self.problem(format!("Enregistrement de l'exécution impossible : {e}"));
                 }
@@ -691,6 +697,62 @@ impl Engine {
             return Err(format!("échéance de {} déjà tenue", at.format("%H:%M")));
         }
         Ok(at)
+    }
+
+    /// Registre des coûts d'un mois (`couts\2026-10.txt`) : une ligne « exécution coût » par exécution
+    /// qui a coûté, ajoutée par le processus qui l'a menée (fenêtre, ligne de commande, Planificateur).
+    fn cost_ledger(&self, month: &str) -> PathBuf {
+        self.data_dir.join("couts").join(format!("{month}.txt"))
+    }
+
+    fn add_cost(&mut self, run_id: &str, at: NaiveDateTime, usd: f64) {
+        use std::io::Write;
+        let path = self.cost_ledger(&at.format("%Y-%m").to_string());
+        let _ = std::fs::create_dir_all(path.parent().unwrap_or(&self.data_dir));
+        let written = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut f| writeln!(f, "{run_id}\t{usd}"));
+        if let Err(e) = written {
+            self.problem(format!("Coût non enregistré ({}) : {e}", path.display()));
+        }
+    }
+
+    /// Ce que les sessions ont coûté pendant le mois de `at` (équivalent API, en dollars).
+    pub fn month_cost(&self, at: NaiveDateTime) -> f64 {
+        let text = std::fs::read_to_string(self.cost_ledger(&at.format("%Y-%m").to_string())).unwrap_or_default();
+        let mut seen = BTreeSet::new();
+        text.lines()
+            .filter_map(|l| l.split_once('\t'))
+            .filter(|(id, _)| seen.insert(id.to_string()))
+            .filter_map(|(_, usd)| usd.trim().parse::<f64>().ok())
+            .sum()
+    }
+
+    pub fn monthly_budget(&self) -> Option<f64> {
+        self.planning.budget_mensuel_usd
+    }
+
+    /// Fixe le plafond mensuel des sessions Claude (aucun : `None`).
+    pub fn set_monthly_budget(&mut self, usd: Option<f64>) {
+        self.planning.budget_mensuel_usd = usd.filter(|b| *b > 0.0);
+        self.save_planning();
+    }
+
+    /// Une session Claude part-elle sans risquer de dépasser le plafond du mois ? Son propre budget
+    /// est compté comme déjà dépensé.
+    fn monthly_budget_check(&self, task: &Task, now: NaiveDateTime) -> Result<(), String> {
+        let (Some(limit), Some(c)) = (self.planning.budget_mensuel_usd, &task.action.claude) else { return Ok(()) };
+        let spent = self.month_cost(now);
+        let this = c.budget_usd.unwrap_or(0.0);
+        if spent + this > limit {
+            return Err(format!(
+                "Budget mensuel atteint : {spent:.2} $ dépensés ce mois sur {limit:.2} $, et cette session peut coûter \
+                 jusqu'à {this:.2} $ (équivalent API)."
+            ));
+        }
+        Ok(())
     }
 
     fn finished_run(&self, run_id: &str) -> Result<&Run, String> {
@@ -1635,6 +1697,94 @@ mod tests {
             "{:?}",
             e.runs.iter().map(|r| &r.resume).collect::<Vec<_>>()
         );
+    }
+
+    /// Une session Claude (factice) au budget de `budget` dollars.
+    fn claude_task(budget: f64) -> Task {
+        let mut t = Task::new_script("Revue fabrikam");
+        t.action.script = None;
+        t.action.claude = Some(crate::task::ClaudeAction {
+            consigne: "Relis.".into(),
+            budget_usd: Some(budget),
+            ..Default::default()
+        });
+        t
+    }
+
+    /// Faux exécuteur : une session qui a coûté `usd` dollars.
+    fn costly(usd: f64) -> Executor {
+        Arc::new(move |_id, _task, _ctx, _journal, _stop| Outcome {
+            status: Status::Reussie,
+            code: Some(0),
+            summary: "relu".into(),
+            cost: Some(crate::run::Cost { tokens_entree: 1000, tokens_sortie: 50, usd, estime: false }),
+            worktree: None,
+            session: None,
+        })
+    }
+
+    fn by_hand() -> Context {
+        Context { trigger: "à la main".into(), ..Default::default() }
+    }
+
+    #[test]
+    fn monthly_cost_accumulates() {
+        let dir = test_dir("engine-cout-mois");
+        let now = at(21, 10, 0);
+        let mut e = Engine::open_with(&dir, now, Some(costly(0.25)), Duration::from_millis(200));
+        let id = e.save_task(None, &claude_task(1.0), now).unwrap();
+        for _ in 0..2 {
+            e.launch(&id, by_hand(), now);
+            wait_idle(&mut e, now);
+        }
+        assert!((e.month_cost(now) - 0.5).abs() < 1e-9, "{}", e.month_cost(now));
+        // Un autre processus (ligne de commande) note aussi ses coûts : la fenêtre les compte.
+        let other = Engine::open_headless(&dir, now);
+        assert!((other.month_cost(now) - 0.5).abs() < 1e-9);
+        // Une ligne en double (même exécution) ne compte qu'une fois.
+        let ledger = dir.join("couts").join("2026-10.txt");
+        let first = std::fs::read_to_string(&ledger).unwrap().lines().next().unwrap().to_string();
+        std::fs::write(&ledger, format!("{}{first}\n", std::fs::read_to_string(&ledger).unwrap())).unwrap();
+        assert!((e.month_cost(now) - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn next_month_starts_at_zero() {
+        let dir = test_dir("engine-cout-mois-suivant");
+        let now = at(31, 23, 0);
+        let mut e = Engine::open_with(&dir, now, Some(costly(0.4)), Duration::from_millis(200));
+        let id = e.save_task(None, &claude_task(1.0), now).unwrap();
+        e.launch(&id, by_hand(), now);
+        wait_idle(&mut e, now);
+        assert!((e.month_cost(now) - 0.4).abs() < 1e-9);
+        let november = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap().and_hms_opt(0, 30, 0).unwrap();
+        assert_eq!(e.month_cost(november), 0.0);
+    }
+
+    #[test]
+    fn session_over_monthly_budget_is_refused() {
+        let dir = test_dir("engine-budget-mois");
+        let now = at(21, 10, 0);
+        let mut e = Engine::open_with(&dir, now, Some(costly(0.6)), Duration::from_millis(200));
+        let id = e.save_task(None, &claude_task(0.5), now).unwrap();
+        let script = e.save_task(None, &task("echo x", vec![]), now).unwrap();
+        e.set_monthly_budget(Some(1.0));
+        e.launch(&id, by_hand(), now);
+        wait_idle(&mut e, now);
+        assert_eq!(e.runs[0].statut, Status::Reussie, "0,60 $ dépensés, 0,50 $ de plus : 1,10 $ > 1 $ ensuite");
+        e.launch(&id, by_hand(), now);
+        wait_idle(&mut e, now);
+        assert_eq!(e.runs[0].statut, Status::Impossible);
+        assert!(e.runs[0].resume.contains("Budget mensuel atteint"), "{}", e.runs[0].resume);
+        e.launch(&script, by_hand(), now);
+        wait_idle(&mut e, now);
+        assert_ne!(e.runs[0].statut, Status::Impossible, "un script n'est pas compté");
+        // Le plafond est gardé ; le retirer laisse repartir la session.
+        assert_eq!(Engine::open_headless(&dir, now).monthly_budget(), Some(1.0));
+        e.set_monthly_budget(None);
+        e.launch(&id, by_hand(), now);
+        wait_idle(&mut e, now);
+        assert_eq!(e.runs[0].statut, Status::Reussie);
     }
 
     /// `planifie` : la dernière échéance à tenir, ou pourquoi il n'y a rien à faire.

@@ -75,6 +75,8 @@ Premier jet (octobre 2026) :
     réécrite vers un protocole inexistant dans l'environnement de la session ;
   - budget obligatoire (`--max-budget-usd`, et estimation de Patronus en cours de route), tours
     bornés (`--max-turns`) ;
+  - budget mensuel facultatif (réglages) : une session qui risquerait de le dépasser ne part pas ;
+    coût du mois dans la barre d'état ;
   - résumé, coût « équivalent API », appels refusés, transcription et diff dans la boîte ;
   - Claude Code récent requis (`claude --help` doit citer `--restricted`) ;
 - garde-fous : durée maximale, une exécution à la fois par tâche (un départ en attente au plus),
@@ -165,6 +167,7 @@ enregistre une capture de la fenêtre après 3 s (`PATRONUS_CAPTURE_DELAI`, en s
 | `executions\<id>\run.json` | une entrée de la boîte ; `journal.txt` à côté |
 | `planning.json` | dernière surveillance des échéances (pour signaler les manquées), dernier commit vu des branches distantes |
 | `planificateur.log` | passages du Planificateur de Windows (fenêtre fermée) |
+| `couts\<année-mois>.txt` | coût de chaque session Claude du mois (budget mensuel) |
 | `verrous\`, `worktrees\` | verrou de chaque tâche en cours ; worktrees des sessions Claude |
 | `state.json` | réglages (thème, raccourcis, rétention), versionnés |
 

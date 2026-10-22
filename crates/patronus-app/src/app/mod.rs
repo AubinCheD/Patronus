@@ -123,6 +123,8 @@ pub struct App {
     windows_tasks: Option<(u64, Receiver<Vec<String>>)>,
     /// Essais : ni Planificateur ni registre.
     quiet: bool,
+    /// Coût des sessions du mois, relu toutes les 5 s (barre d'état).
+    month_cost: Option<(Instant, f64)>,
 }
 
 impl App {
@@ -196,6 +198,7 @@ impl App {
             read_when_done: None,
             windows_tasks: None,
             quiet,
+            month_cost: None,
         };
         // Essais : la vue à montrer dans la capture.
         match std::env::var("PATRONUS_CAPTURE_VUE").as_deref() {
@@ -502,6 +505,23 @@ impl App {
                 }
                 None => ui.label(RichText::new("Aucune échéance planifiée").color(p.text_dim)),
             };
+            if self.month_cost.is_none_or(|(at, _)| at.elapsed() > Duration::from_secs(5)) {
+                self.month_cost = Some((Instant::now(), e.month_cost(now())));
+            }
+            let spent = self.month_cost.map_or(0.0, |(_, usd)| usd);
+            let budget = e.monthly_budget();
+            if spent > 0.0 || budget.is_some() {
+                ui.separator();
+                let (text, color) = match budget {
+                    Some(b) => (
+                        format!("Ce mois : {spent:.2} $ sur {b:.2} $"),
+                        if spent >= b * 0.8 { p.warn } else { p.text_dim },
+                    ),
+                    None => (format!("Ce mois : {spent:.2} $"), p.text_dim),
+                };
+                ui.label(RichText::new(text).color(color))
+                    .on_hover_text("Sessions Claude, en équivalent API (tarif public, pas une facture)");
+            }
             let n = e.problems.len();
             if n > 0 {
                 ui.separator();
