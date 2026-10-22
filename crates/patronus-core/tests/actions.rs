@@ -6,7 +6,7 @@ use std::process::Command;
 
 use chrono::{NaiveDate, NaiveDateTime};
 use patronus_core::actions::{Launch, apply, check_apply, resume_command};
-use patronus_core::claude::{create_worktree, worktree_diff};
+use patronus_core::claude::{WorktreeInfo, create_worktree, worktree_diff};
 use patronus_core::engine::Engine;
 use patronus_core::run::{Run, RunStore, Status};
 
@@ -102,6 +102,25 @@ fn engine_applies_and_drops_the_worktree() {
     assert!(e.store.read_diff(&id).is_some(), "le diff reste dans l'entrée");
     let reopened = Engine::open(&data, now());
     assert!(reopened.runs[0].diff_applique.is_some(), "enregistré");
+}
+
+/// La session se reprend dans le dossier où elle a tourné ; si c'était un worktree supprimé depuis,
+/// Claude Code ne la retrouverait pas : refusé, avec la raison.
+#[test]
+fn session_resumes_where_it_ran() {
+    let dir = temp("reprendre");
+    let (repo, data, id) = session_with_diff(&dir);
+    let store = RunStore::new(data.join("executions"));
+    let wt = data.join("worktrees").join(&id);
+    let info = WorktreeInfo { chemin: wt.clone(), depot: repo, base: String::new() };
+    std::fs::write(store.run_dir(&id).join("worktree.json"), serde_json::to_string(&info).unwrap()).unwrap();
+    let mut run = store.load_one(&id).unwrap();
+    run.session_claude = Some("abc-123".into());
+    store.save(&run).unwrap();
+    let mut e = Engine::open(&data, now());
+    assert_eq!(e.resume_launch(&id).unwrap().current_dir, wt);
+    e.drop_worktree(&id).unwrap();
+    assert!(e.resume_launch(&id).unwrap_err().contains("n'existe plus"));
 }
 
 #[test]

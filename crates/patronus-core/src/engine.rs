@@ -97,6 +97,17 @@ impl Drop for Ticker {
     }
 }
 
+/// Ce que le fil de maintenance a fait (git), à reprendre sous le verrou du moteur.
+enum Upkeep {
+    Problem(String),
+    /// Diff récupéré du worktree d'une exécution interrompue : l'entrée garde le worktree.
+    Recovered {
+        run_id: String,
+        path: PathBuf,
+        diff: String,
+    },
+}
+
 /// Une action exécutée à la place d'un script ou d'une session Claude : pour les essais.
 pub type Executor = Arc<dyn Fn(&str, &Task, &Context, &Path, &AtomicBool) -> Outcome + Send + Sync>;
 
@@ -176,6 +187,8 @@ pub struct Engine {
     last_refresh: Instant,
     /// Rétention et rapprochement des worktrees à faire au prochain tour (dans le fil du moteur).
     maintenance_due: bool,
+    /// Travail git de la maintenance en cours dans son fil : ce qu'il a fait.
+    upkeep_rx: Option<Receiver<Upkeep>>,
     /// Fermeture demandée : plus aucun départ.
     shutting_down: bool,
     /// Exécutions coupées par la fermeture (et non arrêtées à la main avant) : « interrompues ».
@@ -242,6 +255,7 @@ impl Engine {
             refresh_every: opts.refresh_every,
             last_refresh: Instant::now(),
             maintenance_due: !opts.headless,
+            upkeep_rx: None,
             shutting_down: false,
             cut_by_shutdown: BTreeSet::new(),
             tasks_version: 0,
@@ -560,7 +574,8 @@ impl Engine {
         if self.headless {
             return changed;
         }
-        if self.maintenance_due {
+        changed |= self.collect_upkeep();
+        if self.maintenance_due && self.upkeep_rx.is_none() {
             self.maintenance_due = false;
             changed |= self.maintenance(now);
         }
@@ -807,51 +822,78 @@ impl Engine {
         Ok(r)
     }
 
-    /// Ce qu'appliquer le diff d'une exécution toucherait (dépôt, branche, fichiers), ou pourquoi ce
-    /// n'est pas possible (déjà appliqué, copie de travail qui a divergé…).
-    pub fn diff_plan(&self, run_id: &str) -> Result<crate::actions::ApplyPlan, String> {
+    /// Appliquer le diff d'une exécution : son dépôt et son diff, ou pourquoi ce n'est pas possible.
+    /// Sans git : la vérification et l'application (`actions::check_apply`, `actions::apply`) se
+    /// font hors du verrou du moteur, puis `mark_diff_applied`.
+    pub fn diff_job(&self, run_id: &str) -> Result<(PathBuf, PathBuf), String> {
         let r = self.finished_run(run_id)?;
         if let Some(at) = r.diff_applique {
             return Err(format!("diff déjà appliqué le {}", at.format("%d/%m à %H:%M")));
         }
-        let repo = r.depot.as_ref().ok_or("dépôt de l'exécution inconnu")?;
+        let repo = r.depot.clone().ok_or("dépôt de l'exécution inconnu")?;
         let patch = self.store.diff_path(run_id);
         if !patch.exists() {
             return Err("cette exécution n'a pas de diff".into());
         }
-        crate::actions::check_apply(repo, &patch)
+        Ok((repo, patch))
+    }
+
+    /// Ce qu'appliquer le diff d'une exécution toucherait (dépôt, branche, fichiers), ou pourquoi ce
+    /// n'est pas possible (déjà appliqué, copie de travail qui a divergé…).
+    pub fn diff_plan(&self, run_id: &str) -> Result<crate::actions::ApplyPlan, String> {
+        let (repo, patch) = self.diff_job(run_id)?;
+        crate::actions::check_apply(&repo, &patch)
     }
 
     /// Applique le diff d'une exécution dans la copie de travail de son dépôt (ni index, ni commit), à
     /// la demande de l'utilisateur ; l'entrée note quand.
     pub fn apply_diff(&mut self, run_id: &str, now: NaiveDateTime) -> Result<crate::actions::ApplyPlan, String> {
-        let plan = self.diff_plan(run_id)?;
-        let repo = self.finished_run(run_id)?.depot.clone().unwrap_or_default();
-        crate::actions::apply(&repo, &self.store.diff_path(run_id))?;
-        self.update_run(run_id, |r| r.diff_applique = Some(now));
+        let (repo, patch) = self.diff_job(run_id)?;
+        let plan = crate::actions::check_apply(&repo, &patch)?;
+        crate::actions::apply(&repo, &patch)?;
+        self.mark_diff_applied(run_id, now);
         Ok(plan)
+    }
+
+    pub fn mark_diff_applied(&mut self, run_id: &str, now: NaiveDateTime) {
+        self.update_run(run_id, |r| r.diff_applique = Some(now));
+    }
+
+    /// Supprimer le worktree gardé d'une exécution : le worktree et son dépôt. Sans git : la
+    /// suppression (`claude::discard_worktree`) se fait hors du verrou, puis `forget_worktree`.
+    pub fn worktree_job(&self, run_id: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
+        let r = self.finished_run(run_id)?;
+        let wt = r.worktree.clone().ok_or("cette exécution n'a pas de worktree")?;
+        Ok((wt, r.depot.clone()))
     }
 
     /// Supprime le worktree gardé d'une exécution ; son diff reste dans l'entrée.
     pub fn drop_worktree(&mut self, run_id: &str) -> Result<(), String> {
-        let r = self.finished_run(run_id)?;
-        let wt = r.worktree.clone().ok_or("cette exécution n'a pas de worktree")?;
-        crate::claude::discard_worktree(&wt, r.depot.as_deref())?;
-        self.update_run(run_id, |r| r.worktree = None);
+        let (wt, repo) = self.worktree_job(run_id)?;
+        crate::claude::discard_worktree(&wt, repo.as_deref())?;
+        self.forget_worktree(run_id);
         Ok(())
     }
 
-    /// Le terminal qui reprend la session Claude d'une exécution, dans son dossier (worktree s'il est
-    /// gardé, sinon le dépôt).
+    pub fn forget_worktree(&mut self, run_id: &str) {
+        self.update_run(run_id, |r| r.worktree = None);
+    }
+
+    /// Le terminal qui reprend la session Claude d'une exécution, dans le dossier où elle a tourné :
+    /// Claude Code y range ses sessions. Si c'était un worktree qui n'existe plus, la session ne peut
+    /// plus être retrouvée.
     pub fn resume_launch(&self, run_id: &str) -> Result<crate::actions::Launch, String> {
         let r = self.finished_run(run_id)?;
         let session = r.session_claude.as_ref().ok_or("pas de session Claude à reprendre")?;
-        let dir = r
-            .worktree
-            .clone()
-            .filter(|w| w.is_dir())
-            .or_else(|| r.depot.clone())
-            .ok_or("dossier de la session introuvable")?;
+        let dir = match crate::claude::worktree_info(&self.store.run_dir(run_id)) {
+            Some(info) if info.chemin.is_dir() => info.chemin,
+            Some(_) => {
+                return Err("la session a tourné dans un worktree qui n'existe plus : Claude Code ne la \
+                            retrouverait pas"
+                    .into());
+            }
+            None => r.depot.clone().ok_or("dossier de la session introuvable")?,
+        };
         let wt = crate::actions::windows_terminal();
         Ok(crate::actions::resume_command(&dir, session, &crate::claude::claude_exe(), wt.as_deref()))
     }
@@ -940,39 +982,98 @@ impl Engine {
     }
 
     /// Rétention (avec les worktrees des entrées supprimées) et rapprochement des worktrees laissés
-    /// par une exécution coupée. Rend vrai si la boîte a changé.
+    /// par une exécution coupée. Le travail git (suppression des worktrees, diffs) se fait dans un
+    /// fil, hors du verrou du moteur ; ses résultats sont repris aux tours suivants
+    /// (`collect_upkeep`). Rend vrai si la boîte a changé.
     fn maintenance(&mut self, now: NaiveDateTime) -> bool {
         let removed = self.store.prune(&mut self.runs, self.retention_days, now);
-        for r in &removed {
-            if let Some(wt) = &r.worktree
-                && let Err(e) = crate::claude::discard_worktree(wt, r.depot.as_deref())
-            {
-                self.problem(format!("Worktree de {} non supprimé ({}) : {e}", r.id, wt.display()));
-            }
+        let dropped: Vec<(String, PathBuf, Option<PathBuf>)> =
+            removed.iter().filter_map(|r| Some((r.id.clone(), r.worktree.clone()?, r.depot.clone()))).collect();
+        // Les worktrees des entrées effacées partent avec elles : ce ne sont pas des orphelins.
+        let skip: Vec<PathBuf> = dropped.iter().map(|(_, wt, _)| wt.clone()).collect();
+        let orphans = self.orphan_worktrees(&skip);
+        if !dropped.is_empty() || !orphans.is_empty() {
+            let (tx, rx) = channel();
+            self.upkeep_rx = Some(rx);
+            std::thread::spawn(move || {
+                for (id, wt, repo) in dropped {
+                    if let Err(e) = crate::claude::discard_worktree(&wt, repo.as_deref()) {
+                        let _ =
+                            tx.send(Upkeep::Problem(format!("Worktree de {id} non supprimé ({}) : {e}", wt.display())));
+                    }
+                }
+                for (run_id, path, info) in orphans {
+                    let sent = match crate::claude::worktree_diff(&path, &info.base) {
+                        Ok(diff) if !diff.trim().is_empty() => tx.send(Upkeep::Recovered { run_id, path, diff }),
+                        Ok(_) => match crate::claude::remove_worktree(&info.depot, &path) {
+                            Ok(()) => Ok(()),
+                            Err(e) => tx.send(Upkeep::Problem(format!(
+                                "Worktree vide non supprimé ({}) : {e}",
+                                path.display()
+                            ))),
+                        },
+                        Err(e) => tx.send(Upkeep::Problem(format!("Worktree illisible ({}) : {e}", path.display()))),
+                    };
+                    if sent.is_err() {
+                        return;
+                    }
+                }
+            });
         }
-        self.reconcile_worktrees() || !removed.is_empty()
+        !removed.is_empty()
     }
 
-    /// Chaque worktree de `<données>\worktrees` sans entrée qui le garde est rapproché de son
+    /// Les worktrees de `<données>\worktrees` sans entrée qui les garde, à rapprocher de leur
     /// exécution : diff enregistré s'il y a des changements (l'entrée garde le worktree), supprimé
     /// sinon. Un worktree dont l'exécution est inconnue reste en place et est signalé.
-    fn reconcile_worktrees(&mut self) -> bool {
-        let Ok(entries) = std::fs::read_dir(self.data_dir.join("worktrees")) else { return false };
-        let mut changed = false;
-        for path in entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
+    fn orphan_worktrees(&mut self, skip: &[PathBuf]) -> Vec<(String, PathBuf, crate::claude::WorktreeInfo)> {
+        let Ok(entries) = std::fs::read_dir(self.data_dir.join("worktrees")) else { return Vec::new() };
+        let mut out = Vec::new();
+        let norm =
+            |p: &Path| p.components().map(|c| c.as_os_str().to_string_lossy().to_lowercase()).collect::<Vec<_>>();
+        let skipped = |p: &Path| skip.iter().any(|s| norm(s) == norm(p));
+        for path in entries.flatten().map(|e| e.path()).filter(|p| p.is_dir() && !skipped(p)) {
             let run_id = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-            let run = self.runs.iter().find(|r| r.id == run_id).cloned();
+            let run = self.runs.iter().find(|r| r.id == run_id);
             // En cours (ici ou ailleurs), ou gardé à dessein avec son diff : on n'y touche pas.
-            if run.as_ref().is_some_and(|r| r.statut == Status::EnCours || r.worktree.is_some()) {
+            if run.is_some_and(|r| r.statut == Status::EnCours || r.worktree.is_some()) {
                 continue;
             }
-            let info = crate::claude::worktree_info(&self.store.run_dir(&run_id));
-            let (Some(mut run), Some(info)) = (run, info) else {
-                self.problem(format!("Worktree sans exécution connue, laissé en place : {}", path.display()));
-                continue;
-            };
-            match crate::claude::worktree_diff(&path, &info.base) {
-                Ok(diff) if !diff.trim().is_empty() => {
+            match (run, crate::claude::worktree_info(&self.store.run_dir(&run_id))) {
+                (Some(_), Some(info)) => out.push((run_id, path, info)),
+                _ => self.problem(format!("Worktree sans exécution connue, laissé en place : {}", path.display())),
+            }
+        }
+        out
+    }
+
+    /// Reprend ce que le fil de maintenance a fait. Rend vrai si une entrée a changé.
+    fn collect_upkeep(&mut self) -> bool {
+        let Some(rx) = &self.upkeep_rx else { return false };
+        let mut done = Vec::new();
+        loop {
+            match rx.try_recv() {
+                Ok(u) => done.push(u),
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.upkeep_rx = None;
+                    break;
+                }
+            }
+        }
+        let mut changed = false;
+        for u in done {
+            match u {
+                Upkeep::Problem(p) => self.problem(p),
+                Upkeep::Recovered { run_id, path, diff } => {
+                    // L'entrée a pu changer entre-temps (relancée ailleurs, effacée) : rien à reprendre.
+                    let Some(run) = self
+                        .runs
+                        .iter_mut()
+                        .find(|r| r.id == run_id && r.statut != Status::EnCours && r.worktree.is_none())
+                    else {
+                        continue;
+                    };
                     let patch = self.store.diff_path(&run.id);
                     if !patch.exists() {
                         let _ = write_atomic(&patch, diff.as_bytes());
@@ -984,21 +1085,18 @@ impl Engine {
                         path.display()
                     );
                     run.lu = false;
+                    let run = run.clone();
                     let _ = self.store.save(&run);
-                    if let Some(r) = self.runs.iter_mut().find(|r| r.id == run.id) {
-                        *r = run;
-                    }
                     changed = true;
                 }
-                Ok(_) => {
-                    if let Err(e) = crate::claude::remove_worktree(&info.depot, &path) {
-                        self.problem(format!("Worktree vide non supprimé ({}) : {e}", path.display()));
-                    }
-                }
-                Err(e) => self.problem(format!("Worktree illisible ({}) : {e}", path.display())),
             }
         }
         changed
+    }
+
+    /// Maintenance à faire ou en cours (essais : attendre qu'elle soit finie).
+    pub fn upkeep_pending(&self) -> bool {
+        self.maintenance_due || self.upkeep_rx.is_some()
     }
 
     /// Ajoute un problème à montrer, sans doublon.

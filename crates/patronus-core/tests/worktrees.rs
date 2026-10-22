@@ -51,9 +51,16 @@ fn run(id: &str, day: u32, statut: Status, lu: bool) -> Run {
     r
 }
 
-/// Fait un tour du moteur (la maintenance a lieu au premier tour, dans le fil du moteur).
+/// Fait tourner le moteur jusqu'à la fin de la maintenance : elle part au premier tour, son travail
+/// git se fait dans un fil et ses résultats sont repris aux tours suivants.
 fn first_tick(e: &mut Engine, day: u32) {
+    let start = std::time::Instant::now();
     e.tick(at(day));
+    while e.upkeep_pending() && start.elapsed() < Duration::from_secs(20) {
+        std::thread::sleep(Duration::from_millis(20));
+        e.tick(at(day));
+    }
+    assert!(!e.upkeep_pending(), "maintenance finie");
 }
 
 #[test]

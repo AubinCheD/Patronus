@@ -75,6 +75,9 @@ fn worktree_is_dropped_after_confirmation() {
     click(&mut h, "Supprimer");
     wait_until(&mut h, "worktree supprimé", |_| !wt.exists());
     assert_eq!(git(&repo, &["worktree", "list"]).lines().count(), 1);
+    wait_until(&mut h, "entrée sans worktree", |h| {
+        h.state().engine().runs[0].worktree.is_none() && !shows(h, "Supprimer le worktree…")
+    });
 }
 
 #[test]

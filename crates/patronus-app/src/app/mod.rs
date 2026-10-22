@@ -80,6 +80,15 @@ enum RunDialog {
     /// Appliquer le diff : ce qu'il toucherait, ou pourquoi c'est impossible.
     Apply(String, Result<patronus_core::actions::ApplyPlan, String>),
     DropWorktree(String),
+    /// git travaille (dans un fil) : ce qu'il fait.
+    Busy(String),
+}
+
+/// Fin d'une action sur un résultat menée dans un fil (git), à reporter dans le moteur.
+enum JobDone {
+    Plan(String, Result<patronus_core::actions::ApplyPlan, String>),
+    Applied(String, Result<patronus_core::actions::ApplyPlan, String>),
+    Dropped(String, Result<(), String>),
 }
 
 /// Ce qu'il faut pour ouvrir la fenêtre.
@@ -131,6 +140,10 @@ pub struct App {
     confirm: Option<Act>,
     /// Confirmation d'une action sur un résultat.
     run_dialog: Option<RunDialog>,
+    /// Actions sur un résultat menées dans un fil : leurs fins.
+    jobs: (std::sync::mpsc::Sender<JobDone>, Receiver<JobDone>),
+    /// Pour réveiller l'interface depuis un fil.
+    ctx: egui::Context,
     /// Exécution choisie pendant qu'elle tournait : marquée lue à sa fin si elle est toujours affichée.
     read_when_done: Option<String>,
     /// Synchronisation du Planificateur de Windows : faite (version des tâches), et ses problèmes.
@@ -220,6 +233,8 @@ impl App {
             title: String::new(),
             confirm: None,
             run_dialog: None,
+            jobs: channel(),
+            ctx: cc.egui_ctx.clone(),
             read_when_done: None,
             windows_tasks: None,
             quiet,
@@ -358,28 +373,28 @@ impl App {
                 self.view = View::Inbox;
             }
             Act::Inbox => self.view = View::Inbox,
-            Act::AskApplyDiff(id) => {
-                let plan = e.diff_plan(&id);
-                self.run_dialog = Some(RunDialog::Apply(id, plan));
-            }
-            Act::ApplyDiff(id) => {
-                self.run_dialog = None;
-                match e.apply_diff(&id, t) {
-                    Ok(plan) => self.toast(
-                        format!("Diff appliqué : {} fichier(s), sans commit.", plan.files.len()),
-                        self.palette.ok,
-                    ),
-                    Err(err) => self.toast(format!("Diff non appliqué : {err}"), self.palette.danger),
-                }
-            }
+            // git peut prendre des secondes : dans un fil, hors du verrou du moteur.
+            Act::AskApplyDiff(id) => match e.diff_job(&id) {
+                Ok((repo, patch)) => self.background("Vérification du diff…", move || {
+                    JobDone::Plan(id, patronus_core::actions::check_apply(&repo, &patch))
+                }),
+                Err(why) => self.run_dialog = Some(RunDialog::Apply(id, Err(why))),
+            },
+            Act::ApplyDiff(id) => match e.diff_job(&id) {
+                Ok((repo, patch)) => self.background("Application du diff…", move || {
+                    let done = patronus_core::actions::check_apply(&repo, &patch)
+                        .and_then(|plan| patronus_core::actions::apply(&repo, &patch).map(|_| plan));
+                    JobDone::Applied(id, done)
+                }),
+                Err(why) => self.job_done(JobDone::Applied(id, Err(why)), e),
+            },
             Act::AskDropWorktree(id) => self.run_dialog = Some(RunDialog::DropWorktree(id)),
-            Act::DropWorktree(id) => {
-                self.run_dialog = None;
-                match e.drop_worktree(&id) {
-                    Ok(()) => self.toast("Worktree supprimé ; le diff reste dans le résultat.", self.palette.ok),
-                    Err(err) => self.toast(format!("Worktree non supprimé : {err}"), self.palette.danger),
-                }
-            }
+            Act::DropWorktree(id) => match e.worktree_job(&id) {
+                Ok((wt, repo)) => self.background("Suppression du worktree…", move || {
+                    JobDone::Dropped(id, patronus_core::claude::discard_worktree(&wt, repo.as_deref()))
+                }),
+                Err(why) => self.job_done(JobDone::Dropped(id, Err(why)), e),
+            },
             Act::ResumeSession(id) => {
                 if let Err(err) = e.resume_launch(&id).and_then(|l| l.spawn().map_err(|x| x.to_string())) {
                     self.toast(format!("Session non reprise : {err}"), self.palette.danger);
@@ -390,6 +405,46 @@ impl App {
                 self.toast("Relevé des branches distantes lancé.", self.palette.text_dim);
             }
             Act::Command(c) => self.command(c, e),
+        }
+    }
+
+    /// Lance `work` dans un fil ; la fenêtre de l'action dit ce qui se passe jusqu'à sa fin.
+    fn background(&mut self, busy: &str, work: impl FnOnce() -> JobDone + Send + 'static) {
+        self.run_dialog = Some(RunDialog::Busy(busy.to_string()));
+        let (tx, ctx) = (self.jobs.0.clone(), self.ctx.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(work());
+            ctx.request_repaint();
+        });
+    }
+
+    /// Fin d'une action menée dans un fil : reportée dans le moteur et dite.
+    fn job_done(&mut self, done: JobDone, e: &mut Engine) {
+        match done {
+            JobDone::Plan(id, plan) => self.run_dialog = Some(RunDialog::Apply(id, plan)),
+            JobDone::Applied(id, done) => {
+                self.run_dialog = None;
+                match done {
+                    Ok(plan) => {
+                        e.mark_diff_applied(&id, now());
+                        self.toast(
+                            format!("Diff appliqué : {} fichier(s), sans commit.", plan.files.len()),
+                            self.palette.ok,
+                        );
+                    }
+                    Err(err) => self.toast(format!("Diff non appliqué : {err}"), self.palette.danger),
+                }
+            }
+            JobDone::Dropped(id, done) => {
+                self.run_dialog = None;
+                match done {
+                    Ok(()) => {
+                        e.forget_worktree(&id);
+                        self.toast("Worktree supprimé ; le diff reste dans le résultat.", self.palette.ok);
+                    }
+                    Err(err) => self.toast(format!("Worktree non supprimé : {err}"), self.palette.danger),
+                }
+            }
         }
     }
 
@@ -654,9 +709,18 @@ impl App {
                     ui.label(why.as_str());
                     cancel = ui.button("Fermer").clicked();
                 }
+                RunDialog::Busy(text) => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(text.as_str());
+                    });
+                }
                 RunDialog::DropWorktree(id) => {
                     ui.heading("Supprimer le worktree");
-                    ui.label("Le dossier du worktree est supprimé ; le diff reste dans le résultat.");
+                    ui.label(
+                        "Le dossier du worktree est supprimé ; le diff reste dans le résultat. La session ne pourra \
+                         plus être reprise.",
+                    );
                     ui.horizontal(|ui| {
                         if ui.button("Supprimer").clicked() {
                             go = Some(Act::DropWorktree(id.clone()));
@@ -697,6 +761,9 @@ impl App {
         }
         if let Some(ed) = self.editor.as_ref().filter(|ed| ed.dirty()) {
             out.push(format!("Les modifications de « {} » ne sont pas enregistrées.", ed.task.nom));
+        }
+        if let Some(RunDialog::Busy(text)) = &self.run_dialog {
+            out.push(format!("Une action sur un résultat n'est pas finie ({}).", text.trim_end_matches('…')));
         }
         out
     }
@@ -817,6 +884,9 @@ impl eframe::App for App {
         self.palette = crate::theme::current(&ctx);
         let shared = self.engine.clone();
         let mut e = lock(&shared);
+        while let Ok(done) = self.jobs.1.try_recv() {
+            self.job_done(done, &mut e);
+        }
         self.handle_keys(&ctx, &mut e);
         self.track_zoom(&ctx);
         let unread = e.unread_count();

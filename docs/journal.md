@@ -221,3 +221,10 @@ un avant correction.
   reste la liste des outils interdits de Claude Code. Le faux exécutable cite maintenant, sur
   demande (`[trace]`), ses arguments et la configuration git reçue : un test vérifie de bout en bout
   ce que reçoit la session (critère de fin d'A6, qui n'était tenu qu'en partie).
+- **Contrainte 4 du plan (rien de lent dans le fil de l'interface)** : appliquer le diff, vérifier
+  qu'il s'applique et supprimer un worktree lançaient git dans le fil de l'interface, verrou du moteur
+  tenu ; la maintenance (rétention, rapprochement des worktrees) le faisait sous le verrou dans le fil
+  du moteur. Le moteur prépare maintenant le travail sous le verrou, git tourne dans un fil, et le
+  résultat est reporté ensuite (fenêtre « en cours » côté interface ; fermer pendant ce temps demande
+  confirmation). « Reprendre la session » ouvre le dossier où la session a tourné ; si c'était un
+  worktree supprimé, elle est refusée avec la raison (Claude Code range ses sessions par dossier).
