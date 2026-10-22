@@ -163,6 +163,44 @@ impl App {
                 self.acts.push(Act::Edit(r.tache.clone()));
             }
         });
+        // Ce qu'on peut faire du résultat : toujours à la demande, jamais automatique.
+        if r.statut != Status::EnCours {
+            let has_diff = self.shown.as_ref().is_some_and(|s| s.run_id == r.id && s.diff.is_some());
+            ui.horizontal_wrapped(|ui| {
+                if has_diff && r.depot.is_some() {
+                    match r.diff_applique {
+                        Some(at) => {
+                            ui.label(
+                                RichText::new(format!("Diff appliqué le {}", at.format("%d/%m à %H:%M"))).color(p.ok),
+                            );
+                        }
+                        None => {
+                            if ui
+                                .button("Appliquer le diff…")
+                                .on_hover_text("Dans la copie de travail du dépôt, sans commit ; après confirmation")
+                                .clicked()
+                            {
+                                self.acts.push(Act::AskApplyDiff(r.id.clone()));
+                            }
+                        }
+                    }
+                }
+                if r.worktree.is_some() && ui.button("Supprimer le worktree…").clicked() {
+                    self.acts.push(Act::AskDropWorktree(r.id.clone()));
+                }
+                if r.session_claude.is_some()
+                    && ui
+                        .button("Reprendre la session")
+                        .on_hover_text("claude --resume, dans un terminal ouvert dans le dossier de la session")
+                        .clicked()
+                {
+                    self.acts.push(Act::ResumeSession(r.id.clone()));
+                }
+                if !r.resume.is_empty() && ui.button("Copier le résumé").clicked() {
+                    ui.ctx().copy_text(r.resume.clone());
+                }
+            });
+        }
         ui.separator();
         if !r.resume.is_empty() {
             ui.label(RichText::new("Résumé").strong());

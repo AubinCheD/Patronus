@@ -83,6 +83,9 @@ Premier jet (octobre 2026) :
 - boîte de résultats : statut, résumé, journal, filtres, non lus, archivage ; elle survit au
   redémarrage ; une exécution manquée (Patronus fermé) y est signalée, une exécution coupée par un
   arrêt de Patronus y apparaît « interrompue » ;
+- actions sur un résultat, toujours après confirmation : appliquer le diff d'une session dans la
+  copie de travail (sans commit), supprimer son worktree, reprendre la session (`claude --resume`,
+  dans Windows Terminal ou PowerShell), copier le résumé ;
 - notification Windows à la fin, thèmes, raccourcis réglables.
 
 ### Premier essai réel d'une session Claude

@@ -28,7 +28,7 @@ spécification au plan `docs/superpowers/plans/2026-10-21-passe-complete.md`. Le
 | B2 | Déclencheur « branche distante » | fait |
 | B3 | Application fermée : tâches du Planificateur de Windows | fait |
 | B4 | Premier essai réel de l'action Claude | préparé (README), par l'utilisateur |
-| C1 | Actions sur un résultat : appliquer le diff, worktree, reprendre la session | à faire |
+| C1 | Actions sur un résultat : appliquer le diff, worktree, reprendre la session | fait |
 | C2 | Modèles de tâches | fait |
 | C3 | Budget mensuel des sessions Claude | à faire |
 | C4 | Démarrage avec Windows, fermeture pendant une exécution | à faire |

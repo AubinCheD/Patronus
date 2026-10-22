@@ -56,7 +56,20 @@ enum Act {
     CloseEditor,
     /// Relever les branches distantes sans attendre.
     PollBranches,
+    /// Actions sur un résultat : demander confirmation, puis agir.
+    AskApplyDiff(String),
+    ApplyDiff(String),
+    AskDropWorktree(String),
+    DropWorktree(String),
+    ResumeSession(String),
     Command(Command),
+}
+
+/// Confirmation d'une action sur un résultat.
+enum RunDialog {
+    /// Appliquer le diff : ce qu'il toucherait, ou pourquoi c'est impossible.
+    Apply(String, Result<patronus_core::actions::ApplyPlan, String>),
+    DropWorktree(String),
 }
 
 /// Ce qu'il faut pour ouvrir la fenêtre.
@@ -102,6 +115,8 @@ pub struct App {
     title: String,
     /// Action en attente de confirmation : elle abandonnerait des modifications de l'éditeur.
     confirm: Option<Act>,
+    /// Confirmation d'une action sur un résultat.
+    run_dialog: Option<RunDialog>,
     /// Exécution choisie pendant qu'elle tournait : marquée lue à sa fin si elle est toujours affichée.
     read_when_done: Option<String>,
     /// Synchronisation du Planificateur de Windows : faite (version des tâches), et ses problèmes.
@@ -177,6 +192,7 @@ impl App {
             acts: Vec::new(),
             title: String::new(),
             confirm: None,
+            run_dialog: None,
             read_when_done: None,
             windows_tasks: None,
             quiet,
@@ -304,6 +320,33 @@ impl App {
                 self.view = View::Inbox;
             }
             Act::Inbox => self.view = View::Inbox,
+            Act::AskApplyDiff(id) => {
+                let plan = e.diff_plan(&id);
+                self.run_dialog = Some(RunDialog::Apply(id, plan));
+            }
+            Act::ApplyDiff(id) => {
+                self.run_dialog = None;
+                match e.apply_diff(&id, t) {
+                    Ok(plan) => self.toast(
+                        format!("Diff appliqué : {} fichier(s), sans commit.", plan.files.len()),
+                        self.palette.ok,
+                    ),
+                    Err(err) => self.toast(format!("Diff non appliqué : {err}"), self.palette.danger),
+                }
+            }
+            Act::AskDropWorktree(id) => self.run_dialog = Some(RunDialog::DropWorktree(id)),
+            Act::DropWorktree(id) => {
+                self.run_dialog = None;
+                match e.drop_worktree(&id) {
+                    Ok(()) => self.toast("Worktree supprimé ; le diff reste dans le résultat.", self.palette.ok),
+                    Err(err) => self.toast(format!("Worktree non supprimé : {err}"), self.palette.danger),
+                }
+            }
+            Act::ResumeSession(id) => {
+                if let Err(err) = e.resume_launch(&id).and_then(|l| l.spawn().map_err(|x| x.to_string())) {
+                    self.toast(format!("Session non reprise : {err}"), self.palette.danger);
+                }
+            }
             Act::PollBranches => {
                 e.poll_branches_now();
                 self.toast("Relevé des branches distantes lancé.", self.palette.text_dim);
@@ -498,6 +541,57 @@ impl App {
         });
     }
 
+    /// Confirmation d'une action sur un résultat (appliquer le diff, supprimer le worktree).
+    fn run_dialog_window(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = &self.run_dialog else { return };
+        let (mut go, mut cancel) = (None, false);
+        egui::Modal::new(egui::Id::unique("action-resultat")).show(ctx, |ui| {
+            ui.set_width(460.0);
+            match dialog {
+                RunDialog::Apply(id, Ok(plan)) => {
+                    ui.heading("Appliquer le diff");
+                    ui.label(format!(
+                        "Dans la copie de travail (branche {}), sans commit ni index : {} fichier(s).",
+                        if plan.branch.is_empty() { "?" } else { &plan.branch },
+                        plan.files.len()
+                    ));
+                    for f in plan.files.iter().take(12) {
+                        ui.label(RichText::new(f).monospace().small());
+                    }
+                    if plan.files.len() > 12 {
+                        ui.label(format!("… et {} autres", plan.files.len() - 12));
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Appliquer").clicked() {
+                            go = Some(Act::ApplyDiff(id.clone()));
+                        }
+                        cancel = ui.button("Annuler").clicked();
+                    });
+                }
+                RunDialog::Apply(_, Err(why)) => {
+                    ui.heading("Diff non applicable");
+                    ui.label(why.as_str());
+                    cancel = ui.button("Fermer").clicked();
+                }
+                RunDialog::DropWorktree(id) => {
+                    ui.heading("Supprimer le worktree");
+                    ui.label("Le dossier du worktree est supprimé ; le diff reste dans le résultat.");
+                    ui.horizontal(|ui| {
+                        if ui.button("Supprimer").clicked() {
+                            go = Some(Act::DropWorktree(id.clone()));
+                        }
+                        cancel = ui.button("Annuler").clicked();
+                    });
+                }
+            }
+        });
+        if let Some(act) = go {
+            self.acts.push(act);
+        } else if cancel {
+            self.run_dialog = None;
+        }
+    }
+
     /// Confirmation avant d'abandonner les modifications de l'éditeur.
     fn confirm_window(&mut self, ctx: &egui::Context, e: &mut Engine) {
         if self.confirm.is_none() {
@@ -602,6 +696,7 @@ impl eframe::App for App {
         self.problems_window(&ctx, &mut e);
         self.command_palette(&ctx, &e);
         self.confirm_window(&ctx, &mut e);
+        self.run_dialog_window(&ctx);
         // Exécution choisie pendant qu'elle tournait : lue à sa fin si elle est toujours affichée.
         if let Some(id) = self.read_when_done.clone()
             && let Some(r) = e.runs.iter().find(|r| r.id == id)

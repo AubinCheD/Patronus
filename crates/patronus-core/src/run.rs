@@ -122,6 +122,9 @@ pub struct Run {
     /// Dépôt de la tâche au moment de l'exécution (diff à appliquer, worktree à nettoyer).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub depot: Option<PathBuf>,
+    /// Diff appliqué dans la copie de travail (à la demande de l'utilisateur), et quand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_applique: Option<NaiveDateTime>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub liens: Vec<String>,
     #[serde(flatten)]
@@ -147,6 +150,7 @@ impl Run {
             session_claude: None,
             proprietaire: None,
             depot: None,
+            diff_applique: None,
             liens: Vec::new(),
             autres: BTreeMap::new(),
         }

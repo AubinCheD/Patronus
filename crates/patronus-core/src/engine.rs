@@ -693,6 +693,63 @@ impl Engine {
         Ok(at)
     }
 
+    fn finished_run(&self, run_id: &str) -> Result<&Run, String> {
+        let r = self.runs.iter().find(|r| r.id == run_id).ok_or("exécution introuvable")?;
+        if r.statut == Status::EnCours {
+            return Err("l'exécution est encore en cours".into());
+        }
+        Ok(r)
+    }
+
+    /// Ce qu'appliquer le diff d'une exécution toucherait (dépôt, branche, fichiers), ou pourquoi ce
+    /// n'est pas possible (déjà appliqué, copie de travail qui a divergé…).
+    pub fn diff_plan(&self, run_id: &str) -> Result<crate::actions::ApplyPlan, String> {
+        let r = self.finished_run(run_id)?;
+        if let Some(at) = r.diff_applique {
+            return Err(format!("diff déjà appliqué le {}", at.format("%d/%m à %H:%M")));
+        }
+        let repo = r.depot.as_ref().ok_or("dépôt de l'exécution inconnu")?;
+        let patch = self.store.diff_path(run_id);
+        if !patch.exists() {
+            return Err("cette exécution n'a pas de diff".into());
+        }
+        crate::actions::check_apply(repo, &patch)
+    }
+
+    /// Applique le diff d'une exécution dans la copie de travail de son dépôt (ni index, ni commit), à
+    /// la demande de l'utilisateur ; l'entrée note quand.
+    pub fn apply_diff(&mut self, run_id: &str, now: NaiveDateTime) -> Result<crate::actions::ApplyPlan, String> {
+        let plan = self.diff_plan(run_id)?;
+        let repo = self.finished_run(run_id)?.depot.clone().unwrap_or_default();
+        crate::actions::apply(&repo, &self.store.diff_path(run_id))?;
+        self.update_run(run_id, |r| r.diff_applique = Some(now));
+        Ok(plan)
+    }
+
+    /// Supprime le worktree gardé d'une exécution ; son diff reste dans l'entrée.
+    pub fn drop_worktree(&mut self, run_id: &str) -> Result<(), String> {
+        let r = self.finished_run(run_id)?;
+        let wt = r.worktree.clone().ok_or("cette exécution n'a pas de worktree")?;
+        crate::claude::discard_worktree(&wt, r.depot.as_deref())?;
+        self.update_run(run_id, |r| r.worktree = None);
+        Ok(())
+    }
+
+    /// Le terminal qui reprend la session Claude d'une exécution, dans son dossier (worktree s'il est
+    /// gardé, sinon le dépôt).
+    pub fn resume_launch(&self, run_id: &str) -> Result<crate::actions::Launch, String> {
+        let r = self.finished_run(run_id)?;
+        let session = r.session_claude.as_ref().ok_or("pas de session Claude à reprendre")?;
+        let dir = r
+            .worktree
+            .clone()
+            .filter(|w| w.is_dir())
+            .or_else(|| r.depot.clone())
+            .ok_or("dossier de la session introuvable")?;
+        let wt = crate::actions::windows_terminal();
+        Ok(crate::actions::resume_command(&dir, session, &crate::claude::claude_exe(), wt.as_deref()))
+    }
+
     /// Relève maintenant toutes les branches distantes (bouton « Vérifier maintenant », essais).
     pub fn poll_branches_now(&mut self) {
         self.branch_next.clear();
