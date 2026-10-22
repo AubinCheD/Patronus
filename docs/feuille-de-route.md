@@ -118,7 +118,8 @@ Claude Code et à la CLI installée (2.1.306). Les constats sont repris ici avec
     intégrés de la tâche seulement) ;
   - modes permis : défaut, `acceptEdits`, `plan`, `dontAsk` ;
   - push impossible au niveau de git : `url.patronus-push-interdit:.pushInsteadOf` (vide) injecté par
-    `GIT_CONFIG_COUNT` ; `GIT_TERMINAL_PROMPT=0` ;
+    `GIT_CONFIG_COUNT`, et `core.hooksPath` vers un crochet `pre-push` qui refuse (un `pushurl`
+    explicite n'est pas réécrit par git ; ajouté après revue) ; `GIT_TERMINAL_PROMPT=0` ;
   - interdits élargis (`git -C … push`, `gh pr create|comment|merge|review`, `gh issue
     create|comment|edit|close`, `gh api`, `gh workflow run`, `gh release`, publications) ;
   - `Bash` sans restriction : avertissement dans l'éditeur.

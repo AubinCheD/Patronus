@@ -262,3 +262,22 @@ fn cmd_shim_runs_with_a_multiline_prompt() {
     assert!(out.summary.contains("outils Read Bash(npm outdated)"), "{}", out.summary);
     assert!(out.summary.contains("consigne : Première ligne."), "{}", out.summary);
 }
+
+/// Ce que le processus `claude` reçoit vraiment : mode restreint, outils, interdits, et le garde-fou
+/// de push dans l'environnement (réécriture des adresses, crochet `pre-push` de Patronus).
+#[test]
+fn session_receives_isolation_args_and_push_guard() {
+    let dir = setup("trace");
+    let r = repo(&dir);
+    let (out, journal) = run(&dir, &task("Relis le code. [trace]", &r, true), "r12");
+    assert_eq!(out.status, Status::Reussie, "{journal}");
+    let s = &out.summary;
+    for arg in ["--restricted", "--strict-mcp-config", "--tools Read,Grep,Glob", "Bash(git push:*)", "--max-turns 5"] {
+        assert!(s.contains(arg), "argument {arg} : {s}");
+    }
+    assert!(s.contains("git : url.patronus-push-interdit:.pushInsteadOf=\n"), "{s}");
+    let hooks = dir.join("donnees").join("garde-fous").join("crochets");
+    let expected = format!("git : core.hooksPath={}", hooks.to_string_lossy().replace('\\', "/"));
+    assert!(s.contains(&expected), "{s}");
+    assert!(std::fs::read_to_string(hooks.join("pre-push")).unwrap().contains("exit 1"));
+}

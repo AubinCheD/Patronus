@@ -204,3 +204,20 @@ sur ses propres écritures), dix importants, douze mineurs : tous retenus (A1 à
   icônes de 16 à 256 px) comme le fait Fawkes. L'icône de la zone de notification est désormais
   celle de l'exécutable. Vérifié par les tests (`exe_has_version_info`, `exe_has_icon`) et à l'œil
   (rendus 256 et 32 px).
+
+## 22/10/2026 — revue finale de la passe complète
+
+Un relecteur indépendant a relu toute la passe (60e002b..6a65b26). Ses constats ont été vérifiés un à
+un avant correction.
+
+- **Critique, B3** : au-delà de 256 Ko, `planificateur.log` était coupé en son milieu en octets ; une
+  coupe dans un « é » faisait paniquer `planifie` à chaque passage, et les tâches « application
+  fermée » ne tournaient plus, sans message. Coupe en octets après un saut de ligne ; le test échoue
+  bien avec l'ancien code.
+- **A6, garde-fou de push** : git n'applique pas `pushInsteadOf` à un `pushurl` explicite (vérifié
+  sans pousser : `git remote get-url --push`). Ajout d'un crochet `pre-push` de Patronus par
+  `core.hooksPath`, vérifié par `git hook run pre-push` (aucun push). Limite connue : un
+  `git push --no-verify` vers un `pushurl` explicite y échapperait encore ; la première barrière
+  reste la liste des outils interdits de Claude Code. Le faux exécutable cite maintenant, sur
+  demande (`[trace]`), ses arguments et la configuration git reçue : un test vérifie de bout en bout
+  ce que reçoit la session (critère de fin d'A6, qui n'était tenu qu'en partie).

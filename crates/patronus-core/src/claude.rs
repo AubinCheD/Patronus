@@ -48,18 +48,42 @@ pub const FORBIDDEN_TOOLS: [&str; 22] = [
     "Bash(az repos pr:*)",
 ];
 
-/// Variables d'environnement de la session : toute adresse de push est réécrite vers un protocole
-/// qui n'existe pas (`url.<x>.pushInsteadOf` vide, ajouté après la configuration déjà passée par
-/// `GIT_CONFIG_COUNT`), et git ne demande jamais d'identifiants.
-pub fn git_guard_env(existing_count: Option<&str>) -> Vec<(String, String)> {
+/// Variables d'environnement de la session, ajoutées après la configuration déjà passée par
+/// `GIT_CONFIG_COUNT` :
+/// - toute adresse de push est réécrite vers un protocole qui n'existe pas (`url.<x>.pushInsteadOf`
+///   vide) ;
+/// - les crochets sont ceux de `hooks` (`core.hooksPath`), dont un `pre-push` qui refuse tout push :
+///   il couvre un distant à `pushurl` explicite, que git ne réécrit pas ;
+/// - git ne demande jamais d'identifiants.
+///
+/// Un `git push --no-verify` vers un `pushurl` explicite y échapperait encore : la première barrière
+/// reste la liste des outils interdits de Claude Code.
+pub fn git_guard_env(existing_count: Option<&str>, hooks: &Path) -> Vec<(String, String)> {
     let n: usize = existing_count.and_then(|c| c.trim().parse().ok()).unwrap_or(0);
     vec![
-        ("GIT_CONFIG_COUNT".into(), (n + 1).to_string()),
+        ("GIT_CONFIG_COUNT".into(), (n + 2).to_string()),
         (format!("GIT_CONFIG_KEY_{n}"), "url.patronus-push-interdit:.pushInsteadOf".into()),
         (format!("GIT_CONFIG_VALUE_{n}"), String::new()),
+        (format!("GIT_CONFIG_KEY_{}", n + 1), "core.hooksPath".into()),
+        (format!("GIT_CONFIG_VALUE_{}", n + 1), hooks.to_string_lossy().replace('\\', "/")),
         ("GIT_TERMINAL_PROMPT".into(), "0".into()),
         ("GCM_INTERACTIVE".into(), "never".into()),
     ]
+}
+
+/// Crochet `pre-push` des sessions (fins de ligne LF : git le lance par `sh`).
+const PRE_PUSH: &str = "#!/bin/sh\n\
+    echo \"Patronus : pas de push pendant une session ; relisez le résultat puis poussez vous-même.\" >&2\n\
+    exit 1\n";
+
+/// Écrit les crochets des sessions dans `<données>\garde-fous\crochets` et rend ce dossier. Ceux
+/// du dépôt sont ignorés pendant la session : rien n'y est commité pour l'utilisateur, dont les
+/// crochets jouent quand il commite le diff appliqué.
+pub fn guard_hooks(data_dir: &Path) -> std::io::Result<PathBuf> {
+    let dir = data_dir.join("garde-fous").join("crochets");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("pre-push"), PRE_PUSH)?;
+    Ok(dir)
 }
 
 /// L'exécutable de Claude Code : `PATRONUS_CLAUDE` s'il est défini (essais), sinon le premier
@@ -432,6 +456,14 @@ pub fn run_claude_with(
     let Some(c) = &task.action.claude else { return Outcome::impossible("La tâche n'a pas de session Claude.") };
     let run_dir = journal.parent().map(Path::to_path_buf).unwrap_or_default();
     log(journal, &format!("[patronus] {} — {}", task.nom, ctx.trigger));
+    let hooks = match guard_hooks(data_dir) {
+        Ok(h) => h,
+        Err(e) => {
+            let msg = format!("Garde-fou de push non écrit (crochet pre-push) : {e}");
+            log(journal, &format!("[patronus] {msg}"));
+            return Outcome::impossible(msg);
+        }
+    };
     // Dossier de travail : un worktree dédié si demandé, sinon le dépôt.
     let mut worktree = None;
     let dir = match (&task.action.worktree, &task.depot) {
@@ -483,7 +515,7 @@ pub fn run_claude_with(
     }
     let mut cmd = Command::new(exe);
     cmd.args(&args).current_dir(&dir);
-    cmd.envs(git_guard_env(std::env::var("GIT_CONFIG_COUNT").ok().as_deref()));
+    cmd.envs(git_guard_env(std::env::var("GIT_CONFIG_COUNT").ok().as_deref(), &hooks));
     cmd.envs(ctx.vars.iter().map(|(k, v)| (k, v)));
     let stream_path = run_dir.join("sortie.jsonl");
     let max = Duration::from_secs(task.garde_fous.duree_max_min as u64 * 60);
@@ -652,31 +684,59 @@ mod tests {
 
     #[test]
     fn push_guard_appends_to_existing_git_config() {
-        let env = git_guard_env(None);
-        assert!(env.contains(&("GIT_CONFIG_COUNT".into(), "1".into())));
+        let hooks = Path::new(r"C:\donnees\garde-fous\crochets");
+        let env = git_guard_env(None, hooks);
+        assert!(env.contains(&("GIT_CONFIG_COUNT".into(), "2".into())));
         assert!(env.contains(&("GIT_CONFIG_KEY_0".into(), "url.patronus-push-interdit:.pushInsteadOf".into())));
+        assert!(env.contains(&("GIT_CONFIG_KEY_1".into(), "core.hooksPath".into())));
+        assert!(env.contains(&("GIT_CONFIG_VALUE_1".into(), "C:/donnees/garde-fous/crochets".into())));
         assert!(env.contains(&("GIT_TERMINAL_PROMPT".into(), "0".into())));
-        let env = git_guard_env(Some("2"));
-        assert!(env.contains(&("GIT_CONFIG_COUNT".into(), "3".into())));
+        let env = git_guard_env(Some("2"), hooks);
+        assert!(env.contains(&("GIT_CONFIG_COUNT".into(), "4".into())));
         assert!(env.iter().any(|(k, _)| k == "GIT_CONFIG_KEY_2"));
+        assert!(env.iter().any(|(k, _)| k == "GIT_CONFIG_KEY_3"));
     }
 
-    /// Avec l'environnement de la session, git réécrit toute adresse de push (sans rien pousser :
-    /// `git remote get-url --push` montre l'adresse qu'il utiliserait), et garde celle de lecture.
+    /// Un dépôt fictif `contoso-api` et git avec l'environnement de la session : rend la sortie et la
+    /// réussite. Rien n'est jamais poussé : `git remote get-url --push` montre l'adresse que git
+    /// utiliserait, `git hook run pre-push` lance le crochet que lancerait un push.
+    fn guarded_git(name: &str) -> impl Fn(&[&str]) -> (String, bool) {
+        let dir = crate::fsutil::test_dir(name);
+        let hooks = guard_hooks(&dir.join("donnees")).unwrap();
+        let repo = dir.join("contoso-api");
+        std::fs::create_dir_all(&repo).unwrap();
+        move |args: &[&str]| {
+            let out =
+                Command::new("git").arg("-C").arg(&repo).args(args).envs(git_guard_env(None, &hooks)).output().unwrap();
+            let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            (text.trim().to_string(), out.status.success())
+        }
+    }
+
+    /// Avec l'environnement de la session, git réécrit toute adresse de push et garde celle de lecture.
     #[test]
     fn push_url_is_rewritten_in_the_session_environment() {
-        let dir = crate::fsutil::test_dir("push-guard");
-        let run = |args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(&dir).args(args).envs(git_guard_env(None)).output().unwrap();
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
-        };
-        run(&["init", "-q"]);
-        run(&["remote", "add", "origin", "https://contoso.com/api.git"]);
+        let git = guarded_git("push-guard");
+        git(&["init", "-q"]);
+        git(&["remote", "add", "origin", "https://contoso.com/api.git"]);
         assert_eq!(
-            run(&["remote", "get-url", "--push", "origin"]),
+            git(&["remote", "get-url", "--push", "origin"]).0,
             "patronus-push-interdit:https://contoso.com/api.git"
         );
-        assert_eq!(run(&["remote", "get-url", "origin"]), "https://contoso.com/api.git");
+        assert_eq!(git(&["remote", "get-url", "origin"]).0, "https://contoso.com/api.git");
+    }
+
+    /// Un `pushurl` explicite n'est pas réécrit par git : le crochet `pre-push` refuse quand même.
+    #[test]
+    fn explicit_pushurl_is_stopped_by_the_hook() {
+        let git = guarded_git("push-guard-pushurl");
+        git(&["init", "-q"]);
+        git(&["remote", "add", "origin", "https://contoso.com/api.git"]);
+        git(&["config", "remote.origin.pushurl", "https://contoso.com/api-push.git"]);
+        assert_eq!(git(&["remote", "get-url", "--push", "origin"]).0, "https://contoso.com/api-push.git");
+        let (text, ok) = git(&["hook", "run", "pre-push", "--", "origin", "https://contoso.com/api-push.git"]);
+        assert!(!ok, "le crochet refuse : {text}");
+        assert!(text.contains("Patronus : pas de push"), "{text}");
     }
 
     #[test]

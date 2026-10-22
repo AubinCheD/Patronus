@@ -72,8 +72,10 @@ Premier jet (octobre 2026) :
   - mode restreint de Claude Code (`--restricted` : réglages de l'utilisateur et du dépôt ignorés,
     outils de fichiers confinés au dossier de travail), seuls les outils intégrés de la tâche
     (`--tools`), aucun serveur MCP d'ailleurs ;
-  - push, fusion, publication, commentaires de PR interdits ; en plus, toute adresse de push est
-    réécrite vers un protocole inexistant dans l'environnement de la session ;
+  - push, fusion, publication, commentaires de PR interdits ; en plus, dans l'environnement de la
+    session, toute adresse de push est réécrite vers un protocole inexistant et un crochet `pre-push`
+    de Patronus refuse tout push, même vers un `pushurl` explicite (les crochets du dépôt ne jouent
+    pas pendant la session : ceux de l'utilisateur jouent quand il commite le diff appliqué) ;
   - budget obligatoire (`--max-budget-usd`, et estimation de Patronus en cours de route), tours
     bornés (`--max-turns`) ;
   - budget mensuel facultatif (réglages) : une session qui risquerait de le dépasser ne part pas ;

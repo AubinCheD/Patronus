@@ -9,7 +9,8 @@
 //! Marqueurs dans la consigne : `[tours:N]` N réponses (une par défaut), `[lent]` 300 ms entre deux,
 //! `[gros]` 100 000 tokens d'entrée par réponse, `[ignorer-budget]` ne pas appliquer
 //! `--max-budget-usd` (pour que Patronus l'applique), `[ecrire]` crée un fichier, `[erreur]` échec,
-//! `[sans-resultat]` fin sans `result`, `[refus]` un appel refusé.
+//! `[sans-resultat]` fin sans `result`, `[refus]` un appel refusé, `[trace]` résumé qui cite les arguments
+//! reçus et la configuration git passée par l'environnement (`GIT_CONFIG_*`).
 
 use std::io::{Read, Write};
 use std::time::Duration;
@@ -27,6 +28,16 @@ fn marker(prompt: &str, name: &str) -> Option<String> {
 
 fn flag(args: &[String], name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
+}
+
+/// Les arguments reçus, puis la configuration git de l'environnement (`clé=valeur`), une par ligne.
+fn trace(args: &[String]) -> String {
+    let n: usize = std::env::var("GIT_CONFIG_COUNT").ok().and_then(|c| c.parse().ok()).unwrap_or(0);
+    let config = (0..n).map(|i| {
+        let get = |k: &str| std::env::var(format!("{k}_{i}")).unwrap_or_default();
+        format!("\ngit : {}={}", get("GIT_CONFIG_KEY"), get("GIT_CONFIG_VALUE"))
+    });
+    format!("\narguments : {}{}", args.join(" "), config.collect::<String>())
 }
 
 fn main() {
@@ -108,7 +119,8 @@ fn main() {
             "num_turns": turns, "total_cost_usd": cost, "usage": usage, "permission_denials": denials,
             "session_id": "faux-123"}),
         None => serde_json::json!({"type": "result", "subtype": "success", "is_error": false,
-            "result": format!("Résumé du faux : outils {} ; consigne : {first_line}", tools.join(" ")),
+            "result": format!("Résumé du faux : outils {} ; consigne : {first_line}{}", tools.join(" "),
+                if marker(&prompt, "trace").is_some() { trace(&args) } else { String::new() }),
             "num_turns": turns, "total_cost_usd": cost, "usage": usage, "permission_denials": denials,
             "session_id": "faux-123"}),
     };
