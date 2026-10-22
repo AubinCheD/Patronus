@@ -162,29 +162,49 @@ fn pump(source: impl std::io::Read + Send + 'static, journal: Arc<Mutex<fs::File
 pub fn decode_line(bytes: &[u8]) -> String {
     match std::str::from_utf8(bytes) {
         Ok(s) => s.to_string(),
-        Err(_) => oem_to_string(bytes),
+        Err(_) => codepage_to_string(CODEPAGE_OEM, bytes),
     }
 }
 
+/// Texte d'un fichier écrit par un script, fins de ligne `\n` : UTF-8 (avec ou sans BOM), UTF-16
+/// avec BOM (redirection de Windows PowerShell), sinon la page de code ANSI du poste (`Set-Content`
+/// de Windows PowerShell) ou, pour cmd, OEM (sa redirection `>`).
+pub fn decode_text(bytes: &[u8], shell: Shell) -> String {
+    let text = if let Some(utf16) = bytes.strip_prefix(&[0xFF, 0xFE]) {
+        let units: Vec<u16> = utf16.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
+        String::from_utf16_lossy(&units)
+    } else {
+        let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
+        match std::str::from_utf8(bytes) {
+            Ok(s) => s.to_string(),
+            Err(_) => codepage_to_string(if shell == Shell::Cmd { CODEPAGE_OEM } else { CODEPAGE_ANSI }, bytes),
+        }
+    };
+    text.replace("\r\n", "\n")
+}
+
+const CODEPAGE_OEM: u32 = windows_sys::Win32::Globalization::CP_OEMCP;
+const CODEPAGE_ANSI: u32 = windows_sys::Win32::Globalization::CP_ACP;
+
 #[cfg(windows)]
-fn oem_to_string(bytes: &[u8]) -> String {
-    use windows_sys::Win32::Globalization::{CP_OEMCP, MultiByteToWideChar};
+fn codepage_to_string(codepage: u32, bytes: &[u8]) -> String {
+    use windows_sys::Win32::Globalization::MultiByteToWideChar;
     if bytes.is_empty() || bytes.len() > i32::MAX as usize {
         return String::from_utf8_lossy(bytes).into_owned();
     }
     unsafe {
-        let n = MultiByteToWideChar(CP_OEMCP, 0, bytes.as_ptr(), bytes.len() as i32, std::ptr::null_mut(), 0);
+        let n = MultiByteToWideChar(codepage, 0, bytes.as_ptr(), bytes.len() as i32, std::ptr::null_mut(), 0);
         if n <= 0 {
             return String::from_utf8_lossy(bytes).into_owned();
         }
         let mut wide = vec![0u16; n as usize];
-        MultiByteToWideChar(CP_OEMCP, 0, bytes.as_ptr(), bytes.len() as i32, wide.as_mut_ptr(), n);
+        MultiByteToWideChar(codepage, 0, bytes.as_ptr(), bytes.len() as i32, wide.as_mut_ptr(), n);
         String::from_utf16_lossy(&wide)
     }
 }
 
 #[cfg(not(windows))]
-fn oem_to_string(bytes: &[u8]) -> String {
+fn codepage_to_string(_codepage: u32, bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
@@ -270,6 +290,16 @@ pub fn log(journal: &Path, line: &str) {
 /// Fichiers modifiés cités dans une variable d'environnement, et dans la consigne d'une session.
 pub const MAX_FILES_IN_ENV: usize = 100;
 pub const MAX_FILES_IN_PROMPT: usize = 50;
+/// Résumé écrit par le script (`PATRONUS_RESUME`) : le début, 4 000 caractères au plus.
+pub const MAX_WRITTEN_SUMMARY: usize = 4000;
+
+/// Les `max` premiers caractères de `text`, suivis de « … » s'il y en avait plus.
+fn capped_text(text: &str, max: usize) -> String {
+    match text.char_indices().nth(max) {
+        Some((i, _)) => format!("{}…", &text[..i]),
+        None => text.to_string(),
+    }
+}
 
 /// Les `max` premiers fichiers, un par ligne, puis « … et N autres » s'il y en a plus.
 pub fn capped_list(files: &[PathBuf], max: usize) -> String {
@@ -378,11 +408,24 @@ pub fn run_script(task_id: &str, task: &Task, ctx: &Context, journal: &Path, sto
             cmd.env("PATRONUS_FICHIERS_LISTE", list);
         }
     }
+    // Le script peut écrire son propre résumé dans ce fichier (absent au départ).
+    let summary_file = journal.parent().map(|d| d.join("resume.txt"));
+    if let Some(f) = &summary_file {
+        let _ = std::fs::remove_file(f);
+        cmd.env("PATRONUS_RESUME", f);
+    }
     let max = Duration::from_secs(task.garde_fous.duree_max_min as u64 * 60);
     let (status, code) = run_process(cmd, journal, stop, max);
     let output = read_lossy(journal);
     let body: String = output.lines().filter(|l| !l.starts_with("[patronus]")).collect::<Vec<_>>().join("\n");
-    let mut summary = tail_summary(&body, 5, 400);
+    let written = summary_file
+        .and_then(|f| std::fs::read(f).ok())
+        .map(|b| capped_text(decode_text(&b, script.shell).trim(), MAX_WRITTEN_SUMMARY))
+        .filter(|s| !s.is_empty());
+    if written.is_some() {
+        log(journal, "[patronus] résumé écrit par le script (PATRONUS_RESUME)");
+    }
+    let mut summary = written.unwrap_or_else(|| tail_summary(&body, 5, 400));
     if summary.is_empty() {
         summary = match status {
             Status::Reussie => "Terminé, sans sortie.".into(),
@@ -601,5 +644,45 @@ mod tests {
         let out = run_script("e", &t, &ctx(), &dir.join("j.txt"), &AtomicBool::new(false));
         assert_eq!(out.status, Status::Reussie, "{}", out.summary);
         assert!(out.summary.contains("café élève"), "{}", out.summary);
+    }
+
+    /// `PATRONUS_RESUME` : ce que le script y écrit devient le résumé, à la place de la fin de sa sortie.
+    #[test]
+    fn summary_file_wins() {
+        let dir = test_dir("exec-resume");
+        let t = script_task(
+            Shell::Cmd,
+            "echo bruit de fond && (echo Rapport prêt && echo https://contoso.com/r/1) > \"%PATRONUS_RESUME%\"",
+            &dir,
+        );
+        let journal = dir.join("j.txt");
+        let out = run_script("e", &t, &ctx(), &journal, &AtomicBool::new(false));
+        assert_eq!(out.status, Status::Reussie, "{}", read_lossy(&journal));
+        assert_eq!(out.summary, "Rapport prêt \nhttps://contoso.com/r/1", "page de code OEM de cmd, CRLF");
+        assert!(read_lossy(&journal).contains("résumé écrit par le script"));
+        // Un fichier laissé par une exécution précédente ne compte pas.
+        assert!(dir.join("resume.txt").exists());
+        let t = script_task(Shell::Cmd, "echo seule sortie", &dir);
+        let out = run_script("e", &t, &ctx(), &dir.join("j2.txt"), &AtomicBool::new(false));
+        assert_eq!(out.summary, "seule sortie");
+    }
+
+    /// Windows PowerShell écrit ses fichiers en UTF-16 (`Out-File`, `>`).
+    #[test]
+    fn summary_file_from_powershell() {
+        let dir = test_dir("exec-resume-ps");
+        let t = script_task(Shell::Powershell, "'Résumé : 3 tickets northwind' | Out-File $env:PATRONUS_RESUME", &dir);
+        let out = run_script("e", &t, &ctx(), &dir.join("j.txt"), &AtomicBool::new(false));
+        assert_eq!(out.summary, "Résumé : 3 tickets northwind");
+    }
+
+    #[test]
+    fn text_files_are_decoded() {
+        let utf16: Vec<u8> = [0xFF, 0xFE].into_iter().chain("été".encode_utf16().flat_map(u16::to_le_bytes)).collect();
+        assert_eq!(decode_text(&utf16, Shell::Powershell), "été");
+        assert_eq!(decode_text("\u{FEFF}été\r\n".as_bytes(), Shell::Bash), "été\n");
+        assert_eq!(decode_text("été".as_bytes(), Shell::Cmd), "été");
+        assert_eq!(capped_text("abcdef", 3), "abc…");
+        assert_eq!(capped_text("abc", 3), "abc");
     }
 }

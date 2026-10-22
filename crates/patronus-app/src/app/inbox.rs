@@ -7,7 +7,7 @@ use egui::{Color32, RichText, ScrollArea};
 use patronus_core::engine::Engine;
 use patronus_core::run::{Run, Status};
 
-use super::widgets::{dot, fmt_duration, fmt_when, open_path};
+use super::widgets::{dot, fmt_duration, fmt_when, open_path, open_url};
 use super::{Act, App};
 
 impl App {
@@ -205,6 +205,15 @@ impl App {
         if !r.resume.is_empty() {
             ui.label(RichText::new("Résumé").strong());
             ui.add(egui::Label::new(&r.resume).wrap());
+            ui.add_space(6.0);
+        }
+        if !r.liens.is_empty() {
+            ui.label(RichText::new("Liens").strong());
+            for url in &r.liens {
+                if ui.link(url).on_hover_text("Ouvrir dans le navigateur").clicked() {
+                    open_url(url);
+                }
+            }
             ui.add_space(6.0);
         }
         // Journal et diff, lus une fois (relus chaque seconde tant que l'exécution tourne), pas à

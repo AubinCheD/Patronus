@@ -15,7 +15,7 @@ use crate::exec::{Context, Outcome, log, run_script};
 use crate::fsutil::{read_text, write_atomic};
 use crate::lock::TaskLock;
 use crate::remote::Poll;
-use crate::run::{Owner, Run, RunStore, Status};
+use crate::run::{MAX_LINKS, Owner, Run, RunStore, Status, links};
 use crate::schedule::{MISSED_COUNT_CAP, Missed, missed, next_due};
 use crate::task::{Loaded, Task, TaskStore, Trigger};
 use crate::watch::{Matcher, Watcher};
@@ -517,6 +517,11 @@ impl Engine {
                     let rest = run.resume.strip_prefix("Arrêtée à la main.").unwrap_or(&run.resume).trim_start();
                     run.resume = format!("Interrompue : Patronus a été fermé.\n{rest}").trim_end().to_string();
                 }
+                // Liens du résumé, puis de la fin de la sortie (sans les lignes de Patronus, qui citent
+                // la commande).
+                let tail = self.store.read_journal_tail(&run.id, 16 * 1024);
+                let output: Vec<&str> = tail.lines().filter(|l| !l.starts_with("[patronus]")).collect();
+                run.liens = links(&format!("{}\n{}", run.resume, output.join("\n")), MAX_LINKS);
                 let run = run.clone();
                 if let Some(c) = run.cout.as_ref().filter(|c| c.usd > 0.0) {
                     self.add_cost(&run.id, run.debut, c.usd);
@@ -1817,6 +1822,22 @@ mod tests {
         assert_eq!(status(&b).statut, Status::Arretee);
         let reopened = Engine::open(&dir, at(21, 10, 1));
         assert_eq!(reopened.runs.iter().find(|r| r.tache == a).unwrap().statut, Status::Interrompue, "enregistré");
+    }
+
+    /// Les liens de la sortie arrivent dans l'entrée ; pas ceux de la commande, que le journal cite.
+    #[test]
+    fn links_reach_the_entry() {
+        let dir = test_dir("engine-liens");
+        let now = at(21, 10, 0);
+        let mut e = Engine::open(&dir, now);
+        let id = e
+            .save_task(None, &task("echo PR : https://contoso.com/pr/7. & rem https://fabrikam.com/cache", vec![]), now)
+            .unwrap();
+        e.launch(&id, by_hand(), now);
+        wait_idle(&mut e, now);
+        assert_eq!(e.runs[0].statut, Status::Reussie, "{}", e.runs[0].resume);
+        assert_eq!(e.runs[0].liens, ["https://contoso.com/pr/7"]);
+        assert_eq!(Engine::open(&dir, now).runs[0].liens, ["https://contoso.com/pr/7"], "enregistrés");
     }
 
     /// `planifie` : la dernière échéance à tenir, ou pourquoi il n'y a rien à faire.

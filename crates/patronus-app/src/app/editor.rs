@@ -260,7 +260,8 @@ impl App {
                 });
                 ui.label(
                     RichText::new(
-                        "Le script reçoit PATRONUS_TACHE, PATRONUS_DECLENCHEUR et PATRONUS_FICHIERS (fichiers modifiés).",
+                        "Le script reçoit PATRONUS_TACHE, PATRONUS_DECLENCHEUR et PATRONUS_FICHIERS (fichiers modifiés) ; \
+                         ce qu'il écrit dans le fichier PATRONUS_RESUME devient le résumé.",
                     )
                     .small()
                     .color(p.text_dim),

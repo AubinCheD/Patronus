@@ -76,3 +76,19 @@ fn worktree_is_dropped_after_confirmation() {
     wait_until(&mut h, "worktree supprimé", |_| !wt.exists());
     assert_eq!(git(&repo, &["worktree", "list"]).lines().count(), 1);
 }
+
+#[test]
+fn links_are_shown() {
+    let dir = temp("liens");
+    let data = dir.join("donnees");
+    let store = RunStore::new(data.join("executions"));
+    let mut run = Run::new("20261022-080000-rapport".into(), "rapport", "Rapport contoso", "à la main", now());
+    run.statut = Status::Reussie;
+    run.resume = "Rapport prêt.".into();
+    run.liens = vec!["https://contoso.com/rapport/12".into(), "https://contoso.com/ci/3".into()];
+    store.save(&run).unwrap();
+    let mut h = app(&data);
+    wait_until(&mut h, "liens affichés", |h| {
+        shows(h, "https://contoso.com/rapport/12") && shows(h, "https://contoso.com/ci/3")
+    });
+}

@@ -188,3 +188,9 @@ sur ses propres écritures), dix importants, douze mineurs : tous retenus (A1 à
   Testée sur une clé d'essai uniquement : la vraie clé `Run` du poste n'a pas été touchée. `--reduit`
   vérifié en vrai (fenêtre d'essai réduite au lancement). La confirmation de fermeture couvre aussi
   le brouillon non enregistré de l'éditeur, qui se perdait sinon en silence.
+- **C5, encodage** : le fichier `PATRONUS_RESUME` est lu en UTF-8 (avec ou sans BOM) ou UTF-16 avec
+  BOM (`Out-File` et `>` de Windows PowerShell) ; sinon dans la page de code OEM pour cmd (sa
+  redirection `>` écrit « prêt » en OEM : le test l'a montré, « prˆt » lu en ANSI) et ANSI pour les
+  autres (`Set-Content`). Les liens sont relevés dans le résumé puis la fin de la sortie, sans les
+  lignes `[patronus]` (qui citent la commande) ; seuls `http://` et `https://` s'ouvrent, par le
+  navigateur par défaut.

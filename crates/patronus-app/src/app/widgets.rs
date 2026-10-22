@@ -29,6 +29,20 @@ pub fn open_path(path: &Path) {
     let _ = std::process::Command::new("explorer.exe").arg(path).spawn();
 }
 
+/// Ouvre une adresse `http://` ou `https://` dans le navigateur par défaut ; rien d'autre (un lien
+/// vient de la sortie d'un script).
+pub fn open_url(url: &str) {
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return;
+    }
+    let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    let (verb, file) = (wide("open"), wide(url));
+    let null = std::ptr::null();
+    unsafe { ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(), null, null, SW_SHOWNORMAL) };
+}
+
 /// « aujourd'hui 08:00 », « hier 18:30 », « demain 08:00 », sinon « 21/10 08:00 ».
 pub fn fmt_when(at: chrono::NaiveDateTime) -> String {
     let today = now().date();

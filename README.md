@@ -82,7 +82,7 @@ Premier jet (octobre 2026) :
 - garde-fous : durée maximale, une exécution à la fois par tâche (un départ en attente au plus),
   arrêt par tâche ou global, journal complet, tâche invalide ou soupçonnée de contenir un secret
   refusée ;
-- boîte de résultats : statut, résumé, journal, filtres, non lus, archivage ; elle survit au
+- boîte de résultats : statut, résumé, liens, journal, filtres, non lus, archivage ; elle survit au
   redémarrage ; une exécution manquée (Patronus fermé) y est signalée, une exécution coupée par un
   arrêt de Patronus y apparaît « interrompue » ;
 - actions sur un résultat, toujours après confirmation : appliquer le diff d'une session dans la
@@ -177,7 +177,10 @@ enregistre une capture de la fenêtre après 3 s (`PATRONUS_CAPTURE_DELAI`, en s
 | `state.json` | réglages (thème, raccourcis, rétention), versionnés |
 
 Le script reçoit `PATRONUS_TACHE`, `PATRONUS_DECLENCHEUR`, `PATRONUS_FICHIERS` (fichiers modifiés, un
-par ligne, 100 au plus) et `PATRONUS_FICHIERS_LISTE` (chemin de la liste complète). Une session Claude
+par ligne, 100 au plus), `PATRONUS_FICHIERS_LISTE` (chemin de la liste complète) et `PATRONUS_RESUME` :
+le chemin d'un fichier où il peut écrire son résumé (sinon le résumé est la fin de sa sortie), par
+exemple `"3 tickets ouverts" | Out-File $env:PATRONUS_RESUME`. Les liens `http(s)://` du résumé et de
+la fin de la sortie (10 au plus) sont cliquables dans la boîte. Une session Claude
 reçoit sa consigne sur l'entrée standard (`consigne.txt` dans le dossier de l'exécution), avec au plus
 50 fichiers modifiés cités.
 

@@ -267,6 +267,20 @@ impl RunStore {
         read_lossy(&self.journal_path(id))
     }
 
+    /// La fin du journal (`max_bytes` au plus), à partir d'une ligne entière.
+    pub fn read_journal_tail(&self, id: &str, max_bytes: u64) -> String {
+        use std::io::{Read, Seek, SeekFrom};
+        let Ok(mut f) = fs::File::open(self.journal_path(id)) else { return String::new() };
+        let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+        let start = len.saturating_sub(max_bytes);
+        let mut buf = Vec::new();
+        if f.seek(SeekFrom::Start(start)).is_err() || f.read_to_end(&mut buf).is_err() {
+            return String::new();
+        }
+        let text = String::from_utf8_lossy(&buf).into_owned();
+        if start == 0 { text } else { text.split_once('\n').map_or(String::new(), |(_, rest)| rest.to_string()) }
+    }
+
     pub fn read_diff(&self, id: &str) -> Option<String> {
         let p = self.diff_path(id);
         p.exists().then(|| read_lossy(&p))
@@ -282,6 +296,42 @@ use chrono::Timelike;
 /// Lit un fichier de sortie quel que soit son encodage (UTF-8 attendu, le reste remplacé).
 pub fn read_lossy(path: &Path) -> String {
     fs::read(path).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default()
+}
+
+/// Liens d'une entrée : 10 au plus.
+pub const MAX_LINKS: usize = 10;
+
+/// Les liens `http://` et `https://` d'un texte, dans l'ordre, sans doublon, `max` au plus. La
+/// ponctuation qui suit un lien (fin de phrase, parenthèse d'un lien Markdown) n'en fait pas partie.
+pub fn links(text: &str, max: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut rest = text;
+    while out.len() < max {
+        let Some(i) = ["https://", "http://"].iter().filter_map(|s| rest.find(s)).min() else { break };
+        let tail = &rest[i..];
+        let end = tail
+            .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`' | '|' | '{' | '}'))
+            .unwrap_or(tail.len());
+        let mut url = &tail[..end];
+        loop {
+            let trimmed = url.trim_end_matches(['.', ',', ';', ':', '!', '?']);
+            let unbalanced = |close: char, open: char| {
+                trimmed.ends_with(close) && trimmed.matches(open).count() < trimmed.matches(close).count()
+            };
+            let trimmed =
+                if unbalanced(')', '(') || unbalanced(']', '[') { &trimmed[..trimmed.len() - 1] } else { trimmed };
+            if trimmed.len() == url.len() {
+                break;
+            }
+            url = trimmed;
+        }
+        let has_host = url.split_once("://").is_some_and(|(_, h)| !h.is_empty());
+        if has_host && !out.iter().any(|u| u == url) {
+            out.push(url.to_string());
+        }
+        rest = &tail[end..];
+    }
+    out
 }
 
 /// Les dernières lignes non vides d'une sortie, pour le résumé.
@@ -375,5 +425,24 @@ mod tests {
     fn summary_is_the_tail() {
         assert_eq!(tail_summary("a\n\nb\nc\n\n", 2, 100), "b\nc");
         assert_eq!(tail_summary("abcdef", 1, 3), "…def");
+    }
+
+    #[test]
+    fn links_are_extracted() {
+        let text = "PR ouverte : https://contoso.com/pr/12. Voir [la CI](https://ci.contoso.com/b/7) \
+                    et (https://fabrikam.com/doc_(v2)), encore https://contoso.com/pr/12 et http:// rien.\n\
+                    \"https://northwind.com/a?b=1&c=2\"";
+        assert_eq!(
+            links(text, MAX_LINKS),
+            [
+                "https://contoso.com/pr/12",
+                "https://ci.contoso.com/b/7",
+                "https://fabrikam.com/doc_(v2)",
+                "https://northwind.com/a?b=1&c=2",
+            ]
+        );
+        let many: String = (0..20).map(|i| format!("https://contoso.com/{i} ")).collect();
+        assert_eq!(links(&many, MAX_LINKS).len(), 10);
+        assert!(links("ftp://contoso.com file://c/x", MAX_LINKS).is_empty(), "http(s) seulement");
     }
 }
