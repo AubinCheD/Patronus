@@ -3,6 +3,7 @@
 
 pub mod app;
 pub mod capture;
+pub mod icon;
 pub mod icons;
 pub mod notify;
 pub mod shortcuts;
@@ -22,7 +23,8 @@ pub fn run(data_dir: std::path::PathBuf, minimized: bool) -> eframe::Result {
         .with_title(APP_TITLE)
         .with_app_id("patronus")
         .with_inner_size(st.taille_fenetre)
-        .with_min_inner_size([760.0, 480.0]);
+        .with_min_inner_size([760.0, 480.0])
+        .with_icon(std::sync::Arc::new(egui::IconData { rgba: icon::render(64), width: 64, height: 64 }));
     let options = eframe::NativeOptions { viewport, centered: true, ..Default::default() };
     eframe::run_native(
         APP_TITLE,

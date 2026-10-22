@@ -199,3 +199,8 @@ sur ses propres écritures), dix importants, douze mineurs : tous retenus (A1 à
   modifiés et les commits des branches distantes sont vus sans lancer de tâche. À la reprise, les
   échéances sont recalculées : une échéance passée pendant une veille en pause n'est ni rattrapée ni
   signalée (le test l'a vérifié en retirant le correctif : elle était rattrapée).
+- **C6, icône** : une tête de cerf lumineuse, dessinée en code (`icon.rs`, sans dépendance ni
+  fichier image), partagée par la fenêtre et `build.rs`, qui écrit le fichier `.res` (version et
+  icônes de 16 à 256 px) comme le fait Fawkes. L'icône de la zone de notification est désormais
+  celle de l'exécutable. Vérifié par les tests (`exe_has_version_info`, `exe_has_icon`) et à l'œil
+  (rendus 256 et 32 px).

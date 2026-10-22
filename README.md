@@ -145,6 +145,10 @@ cargo build --release      # → target\release\patronus.exe
 cargo test
 ```
 
+L'exécutable porte son icône (une tête de cerf, dessinée par `crates/patronus-app/src/icon.rs`) et
+ses informations de version (tirées de `Cargo.toml`) : `build.rs` écrit les ressources Windows
+lui-même, la toolchain GNU n'ayant ni `rc.exe` ni `windres`.
+
 ## Lancer et vérifier
 
 ```powershell

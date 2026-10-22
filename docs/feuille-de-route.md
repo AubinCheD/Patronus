@@ -33,7 +33,7 @@ spécification au plan `docs/superpowers/plans/2026-10-21-passe-complete.md`. Le
 | C3 | Budget mensuel des sessions Claude | fait |
 | C4 | Démarrage avec Windows, fermeture pendant une exécution | fait |
 | C5 | Résumé et liens écrits par le script | fait |
-| C6 | Petits plus : pause générale, recherche, dupliquer, zoom, icône | en cours |
+| C6 | Petits plus : pause générale, recherche, dupliquer, zoom, icône | fait |
 
 ## A. Passe de relecture
 
