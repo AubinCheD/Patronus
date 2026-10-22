@@ -67,6 +67,14 @@ enum Act {
     Command(Command),
 }
 
+/// Bornes du zoom de l'interface.
+const ZOOM_MIN: f32 = 0.5;
+const ZOOM_MAX: f32 = 3.0;
+
+pub(super) fn set_zoom(ctx: &egui::Context, z: f32) {
+    ctx.set_zoom_factor(z.clamp(ZOOM_MIN, ZOOM_MAX));
+}
+
 /// Confirmation d'une action sur un résultat.
 enum RunDialog {
     /// Appliquer le diff : ce qu'il toucherait, ou pourquoi c'est impossible.
@@ -110,6 +118,8 @@ pub struct App {
     rebinding: Option<Command>,
     palette_open: bool,
     palette_query: String,
+    /// Entrée choisie au clavier dans la palette (flèches), parmi celles qui correspondent.
+    palette_index: usize,
     toasts: Vec<Toast>,
     /// Journal et diff de l'exécution affichée.
     shown: Option<inbox::Shown>,
@@ -135,6 +145,8 @@ pub struct App {
     close_dialog: bool,
     /// Fermeture confirmée (ou sans rien à perdre) : ne plus l'empêcher.
     closing: bool,
+    /// Dernier zoom vu : un changement (clavier, molette, réglages) est retenu dans l'état.
+    zoom_seen: f32,
 }
 
 impl App {
@@ -150,10 +162,11 @@ impl App {
         let mut engine = Engine::open_opts(&data_dir, now(), opts);
         engine.problems.splice(0..0, problems);
         crate::theme::apply(&cc.egui_ctx, state.theme);
-        // Essais : `PATRONUS_ZOOM` agrandit l'interface (captures lisibles en taille réelle).
-        if let Some(z) = std::env::var("PATRONUS_ZOOM").ok().and_then(|z| z.parse::<f32>().ok()) {
-            cc.egui_ctx.set_zoom_factor(z.clamp(0.5, 3.0));
-        }
+        // Le zoom réglé ; pour les essais, `PATRONUS_ZOOM` le remplace sans être enregistré (captures
+        // lisibles en taille réelle).
+        let env_zoom = std::env::var("PATRONUS_ZOOM").ok().and_then(|z| z.parse::<f32>().ok());
+        let zoom = env_zoom.unwrap_or(state.zoom).clamp(ZOOM_MIN, ZOOM_MAX);
+        cc.egui_ctx.set_zoom_factor(zoom);
         let palette = crate::theme::current(&cc.egui_ctx);
         let capture = std::env::var("PATRONUS_CAPTURE").ok().map(|p| (p, Instant::now(), false));
         let selected_task = engine.loaded.first().map(|l| l.id.clone());
@@ -199,6 +212,7 @@ impl App {
             rebinding: None,
             palette_open: false,
             palette_query: String::new(),
+            palette_index: 0,
             toasts: Vec::new(),
             shown: None,
             capture,
@@ -213,6 +227,7 @@ impl App {
             autostart: None,
             close_dialog: false,
             closing: false,
+            zoom_seen: zoom,
         };
         // Essais : la vue à montrer dans la capture.
         match std::env::var("PATRONUS_CAPTURE_VUE").as_deref() {
@@ -391,6 +406,7 @@ impl App {
             Command::Palette => {
                 self.palette_open = !self.palette_open;
                 self.palette_query.clear();
+                self.palette_index = 0;
             }
             Command::Settings => self.show_settings = !self.show_settings,
             Command::NextUnread => {
@@ -657,6 +673,20 @@ impl App {
         }
     }
 
+    /// Zoom : Ctrl+molette ici (Ctrl+Plus, Ctrl+Moins et Ctrl+0 sont ceux d'egui) ; tout changement
+    /// est retenu dans l'état.
+    fn track_zoom(&mut self, ctx: &egui::Context) {
+        let delta = ctx.input(|i| i.zoom_delta());
+        if delta != 1.0 {
+            set_zoom(ctx, ctx.zoom_factor() * delta);
+        }
+        let z = ctx.zoom_factor();
+        if (z - self.zoom_seen).abs() > 0.001 {
+            self.zoom_seen = z;
+            self.state.zoom = z.clamp(ZOOM_MIN, ZOOM_MAX);
+        }
+    }
+
     /// Ce que la fermeture ferait perdre : exécutions en cours, brouillon non enregistré.
     fn close_losses(&self, e: &Engine) -> Vec<String> {
         let mut out = Vec::new();
@@ -788,6 +818,7 @@ impl eframe::App for App {
         let shared = self.engine.clone();
         let mut e = lock(&shared);
         self.handle_keys(&ctx, &mut e);
+        self.track_zoom(&ctx);
         let unread = e.unread_count();
         let title = if unread > 0 { format!("({unread}) Patronus") } else { "Patronus".to_string() };
         if title != self.title {

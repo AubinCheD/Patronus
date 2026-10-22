@@ -48,6 +48,24 @@ impl App {
             .iter()
             .filter(|(label, _)| q.split_whitespace().all(|w| label.to_lowercase().contains(w)))
             .collect();
+        // Flèches haut et bas : l'entrée choisie ; Entrée : la lancer.
+        let shown = matching.len().min(12);
+        let (down, up, enter) = ctx.input_mut(|i| {
+            (
+                i.consume_key(egui::Modifiers::NONE, Key::ArrowDown),
+                i.consume_key(egui::Modifiers::NONE, Key::ArrowUp),
+                i.key_pressed(Key::Enter),
+            )
+        });
+        if shown > 0 {
+            if down {
+                self.palette_index = (self.palette_index + 1) % shown;
+            }
+            if up {
+                self.palette_index = (self.palette_index + shown - 1) % shown;
+            }
+        }
+        let current = self.palette_index.min(shown.saturating_sub(1));
         let mut chosen = None;
         egui::Window::new("Palette")
             .title_bar(false)
@@ -60,9 +78,15 @@ impl App {
                         .desired_width(f32::INFINITY),
                 );
                 resp.request_focus();
-                let enter = ui.input(|i| i.key_pressed(Key::Enter));
+                if resp.changed() {
+                    self.palette_index = 0;
+                }
                 for (i, (label, _)) in matching.iter().enumerate().take(12) {
-                    if ui.selectable_label(i == 0, label.as_str()).clicked() || (enter && i == 0) {
+                    let item = ui.selectable_label(i == current, label.as_str());
+                    if i == current && (down || up) {
+                        item.scroll_to_me(None);
+                    }
+                    if item.clicked() || (enter && i == current) {
                         chosen = Some(i);
                     }
                 }
@@ -72,6 +96,7 @@ impl App {
             });
         if let Some(i) = chosen {
             self.palette_open = false;
+            self.palette_index = 0;
             let act = match &matching[i].1 {
                 Entry::Cmd(c) => Act::Command(*c),
                 Entry::Run(id) => Act::Run(id.clone()),

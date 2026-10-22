@@ -70,3 +70,31 @@ fn general_pause_button() {
     wait_until(&mut h, "reprise", |h| !shows(h, "En pause : aucun départ automatique"));
     assert!(!h.state().engine().paused());
 }
+
+/// Palette : flèches haut et bas pour choisir, Entrée pour lancer.
+#[test]
+fn palette_with_arrow_keys() {
+    use eframe::egui::{Key, Modifiers};
+    let dir = temp("palette-fleches");
+    script_task(&dir, "bonjour", "Bonjour contoso", "echo bonjour");
+    let mut h = app(&dir);
+    let open = |h: &mut H| {
+        h.key_press_modifiers(Modifiers::COMMAND, Key::P);
+        h.step();
+        type_in(h, "Commande ou tâche…", "contoso");
+    };
+    open(&mut h);
+    // Lancer, Mettre en pause, Modifier, Dupliquer : deux crans vers le bas, « Modifier ».
+    for _ in 0..2 {
+        h.key_press(Key::ArrowDown);
+        h.step();
+    }
+    h.key_press(Key::Enter);
+    wait_until(&mut h, "tâche ouverte", |h| h.state().draft().is_some_and(|t| t.nom == "Bonjour contoso"));
+    // Vers le haut depuis la première : la dernière, « Dupliquer ».
+    open(&mut h);
+    h.key_press(Key::ArrowUp);
+    h.step();
+    h.key_press(Key::Enter);
+    wait_until(&mut h, "copie ouverte", |h| h.state().draft().is_some_and(|t| t.nom == "Bonjour contoso (copie)"));
+}

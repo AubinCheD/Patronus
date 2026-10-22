@@ -33,6 +33,9 @@ pub struct State {
     pub notifications: bool,
     #[serde(default = "default_size")]
     pub taille_fenetre: [f32; 2],
+    /// Zoom de l'interface (1 : 100 %).
+    #[serde(default = "default_zoom")]
+    pub zoom: f32,
     #[serde(flatten)]
     pub autres: BTreeMap<String, Value>,
 }
@@ -45,6 +48,9 @@ fn yes() -> bool {
 }
 fn default_size() -> [f32; 2] {
     [1200.0, 760.0]
+}
+fn default_zoom() -> f32 {
+    1.0
 }
 
 impl Default for State {

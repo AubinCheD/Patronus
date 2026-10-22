@@ -96,7 +96,8 @@ Premier jet (octobre 2026) :
   une exécution coupée ainsi est « interrompue : Patronus a été fermé » ;
 - lancement à l'ouverture de session (réglages, décoché par défaut) : clé `Run` du compte, fenêtre
   réduite (`--reduit`) ;
-- notification Windows à la fin, thèmes, raccourcis réglables.
+- notification Windows à la fin, thèmes, raccourcis réglables, palette de commandes (Ctrl+P, flèches
+  et Entrée), taille de l'interface (réglages, Ctrl+molette, Ctrl+Plus, Ctrl+Moins, Ctrl+0).
 
 ### Premier essai réel d'une session Claude
 
@@ -168,7 +169,8 @@ dossier de données.
 Données : `%APPDATA%\Patronus`, ou le dossier désigné par `PATRONUS_DATA_DIR` (essais, profils
 séparés ; une instance par dossier). Pour les essais d'interface, `PATRONUS_CAPTURE=<image.png>`
 enregistre une capture de la fenêtre après 3 s (`PATRONUS_CAPTURE_DELAI`, en secondes) puis ferme ;
-`PATRONUS_CAPTURE_VUE=editeur|reglages|palette` choisit la vue, `PATRONUS_ZOOM=2` agrandit l'interface.
+`PATRONUS_CAPTURE_VUE=editeur|reglages|palette` choisit la vue, `PATRONUS_ZOOM=2` agrandit l'interface
+(sans changer le zoom réglé).
 
 | Fichier | Contenu |
 |---|---|
@@ -178,7 +180,7 @@ enregistre une capture de la fenêtre après 3 s (`PATRONUS_CAPTURE_DELAI`, en s
 | `planificateur.log` | passages du Planificateur de Windows (fenêtre fermée) |
 | `couts\<année-mois>.txt` | coût de chaque session Claude du mois (budget mensuel) |
 | `verrous\`, `worktrees\` | verrou de chaque tâche en cours ; worktrees des sessions Claude |
-| `state.json` | réglages (thème, raccourcis, rétention), versionnés |
+| `state.json` | réglages (thème, raccourcis, rétention, zoom, taille de la fenêtre), versionnés |
 
 Le script reçoit `PATRONUS_TACHE`, `PATRONUS_DECLENCHEUR`, `PATRONUS_FICHIERS` (fichiers modifiés, un
 par ligne, 100 au plus), `PATRONUS_FICHIERS_LISTE` (chemin de la liste complète) et `PATRONUS_RESUME` :

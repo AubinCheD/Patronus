@@ -13,7 +13,7 @@ pub const APPROX: &str = "≈";
 pub const ALL: [&str; 7] = [RUN, STOP, EDIT, REMOVE, WARN, INFO, APPROX];
 
 /// Signes de ponctuation du texte de l'interface (police proportionnelle).
-pub const TEXT_SIGNS: &str = "«»…·—’";
+pub const TEXT_SIGNS: &str = "«»…·—’−";
 
 /// Signes du journal (police à chasse fixe) : outils appelés par une session Claude, coupures.
 pub const JOURNAL_SIGNS: &str = "→…";

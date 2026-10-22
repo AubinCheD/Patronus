@@ -21,6 +21,22 @@ impl App {
                     }
                 });
                 ui.end_row();
+                ui.label("Taille de l'interface");
+                ui.horizontal(|ui| {
+                    let z = ctx.zoom_factor();
+                    if ui.small_button("−").on_hover_text("Ctrl+Moins, Ctrl+molette").clicked() {
+                        super::set_zoom(ctx, z - 0.1);
+                    }
+                    ui.label(format!("{:.0} %", z * 100.0));
+                    if ui.small_button("+").on_hover_text("Ctrl+Plus, Ctrl+molette").clicked() {
+                        super::set_zoom(ctx, z + 0.1);
+                    }
+                    if ui.add_enabled((z - 1.0).abs() > 0.001, egui::Button::new("100 %").small()).on_hover_text("Ctrl+0").clicked()
+                    {
+                        super::set_zoom(ctx, 1.0);
+                    }
+                });
+                ui.end_row();
                 ui.label("Conserver les résultats lus");
                 changed |= ui
                     .add(egui::DragValue::new(&mut self.state.retention_jours).range(1..=3650).suffix(" jours"))
