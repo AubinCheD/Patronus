@@ -43,6 +43,12 @@ pub struct Planning {
 /// Retard au-delà duquel une échéance est « manquée » (veille) plutôt que lancée en retard.
 const LATE_MINUTES: i64 = 5;
 
+/// L'heure locale `at` n'existe pas (passage à l'heure d'été : de 2 h à 3 h en France).
+fn in_dst_gap(at: NaiveDateTime) -> bool {
+    use chrono::TimeZone;
+    matches!(chrono::Local.from_local_datetime(&at), chrono::LocalResult::None)
+}
+
 /// Date de modification d'un fichier, en heure locale.
 fn file_time(path: &Path) -> Option<NaiveDateTime> {
     let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;
@@ -607,8 +613,11 @@ impl Engine {
                 continue;
             }
             // Plus de 5 minutes de retard (ordinateur en veille, en hibernation) : comme une échéance
-            // manquée application fermée, rattrapée seulement si la tâche le demande.
-            if now - at > chrono::Duration::minutes(LATE_MINUTES) {
+            // manquée application fermée, rattrapée seulement si la tâche le demande. Une heure qui
+            // n'existe pas ce jour-là (passage à l'heure d'été) part à l'heure qui la suit : ce retard
+            // d'une heure n'en est pas un.
+            let gap = if in_dst_gap(at) { chrono::Duration::hours(1) } else { chrono::Duration::zero() };
+            if now - at > chrono::Duration::minutes(LATE_MINUTES) + gap {
                 let missed = missed(&task, at - chrono::Duration::seconds(1), now);
                 self.handle_missed(
                     &id,
@@ -1195,9 +1204,14 @@ impl Engine {
         for r in self.runs.iter_mut().filter(|r| r.statut == Status::EnCours && !ours.contains(&r.id)) {
             let Some(mut fresh) = self.store.load_one(&r.id) else { continue };
             if fresh.statut == Status::EnCours && !fresh.proprietaire.is_some_and(|o| o.is_alive()) {
-                fresh.statut = Status::Interrompue;
-                fresh.resume = "Le processus qui menait l'exécution s'est arrêté.".into();
-                let _ = self.store.save(&fresh);
+                // Mort, le processus n'écrit plus rien : relu maintenant, son entrée dit s'il a eu le
+                // temps de noter sa fin.
+                fresh = self.store.load_one(&r.id).unwrap_or(fresh);
+                if fresh.statut == Status::EnCours {
+                    fresh.statut = Status::Interrompue;
+                    fresh.resume = "Le processus qui menait l'exécution s'est arrêté.".into();
+                    let _ = self.store.save(&fresh);
+                }
             }
             if fresh != *r {
                 if fresh.statut != Status::EnCours {
@@ -1282,6 +1296,11 @@ impl Engine {
             return;
         }
         if let Some(m) = missed.iter().filter(|m| m.catch_up).max_by_key(|m| m.at) {
+            // En cours dans un autre processus : sans doute le Planificateur de Windows qui rattrape la
+            // même échéance (ouverture de session). Pas de second rattrapage mis en attente derrière.
+            if self.running_elsewhere(id).is_some() {
+                return;
+            }
             let trigger = format!("rattrapage de {}", m.at.format("%d/%m %H:%M"));
             self.launch(id, Context { trigger, files: vec![], ..Default::default() }, now);
             return;
@@ -1867,6 +1886,27 @@ mod tests {
         assert!(counter.all().contains(&"échéance de 09:00".to_string()), "{:?}", counter.all());
     }
 
+    /// Passage à l'heure d'été (29/03/2026 en France : 2 h devient 3 h) : une tâche de 2 h 30 part à
+    /// 3 h, sans être notée manquée. Essai sauté si le fuseau du poste n'a pas ce passage.
+    #[test]
+    fn spring_forward_is_not_a_sleep() {
+        let day = NaiveDate::from_ymd_opt(2026, 3, 29).unwrap();
+        let (before, gap_time, after) =
+            (day.and_hms_opt(1, 0, 0).unwrap(), day.and_hms_opt(2, 30, 0).unwrap(), day.and_hms_opt(3, 0, 0).unwrap());
+        if !in_dst_gap(gap_time) {
+            return;
+        }
+        let dir = test_dir("engine-heure-ete");
+        let (exec, counter) = fake(Duration::ZERO);
+        let mut e = Engine::open_with(&dir, before, Some(exec), Duration::from_millis(200));
+        let heure = vec![Trigger::Heure { heure: "02:30".into(), jours: vec![], rattrapage: false }];
+        e.save_task(Some("nuit"), &task("x", heure), before).unwrap();
+        e.tick(after);
+        wait_idle(&mut e, after);
+        assert_eq!(counter.all(), ["échéance de 02:30"]);
+        assert!(e.runs.iter().all(|r| r.statut != Status::Manquee));
+    }
+
     /// Une tâche créée pendant la fermeture n'a pas de départ manqué d'avant sa création.
     #[test]
     fn new_task_has_no_old_missed() {
@@ -1915,6 +1955,29 @@ mod tests {
             "{:?}",
             e.runs.iter().map(|r| &r.resume).collect::<Vec<_>>()
         );
+    }
+
+    /// À l'ouverture de session, le Planificateur rattrape l'échéance pendant que la fenêtre s'ouvre :
+    /// la fenêtre ne met pas un second rattrapage en attente derrière le sien.
+    #[test]
+    fn catch_up_is_not_queued_behind_another_process() {
+        let dir = test_dir("engine-rattrapage-ailleurs");
+        let (exec, counter) = fake(Duration::ZERO);
+        let mut e = Engine::open(&dir, at(20, 18, 0));
+        let heure = vec![Trigger::Heure { heure: "08:00".into(), jours: vec![], rattrapage: true }];
+        e.save_task(Some("matin"), &task("x", heure), at(20, 18, 0)).unwrap();
+        e.shutdown(at(20, 18, 0), Duration::from_secs(1));
+        drop(e);
+        backdate(&dir.join("taches"), at(20, 17, 0));
+        let (mut child, owner) = other_process();
+        std::fs::create_dir_all(dir.join("verrous")).unwrap();
+        std::fs::write(dir.join("verrous").join("matin.lock"), serde_json::to_string(&owner).unwrap()).unwrap();
+        let mut e = Engine::open_with(&dir, at(21, 10, 0), Some(exec), Duration::from_millis(200));
+        assert!(!e.is_pending("matin"), "pas de second rattrapage en attente");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        spin(&mut e, at(21, 10, 0), Duration::from_millis(300));
+        assert!(counter.all().is_empty());
     }
 
     /// Une session Claude (factice) au budget de `budget` dollars.

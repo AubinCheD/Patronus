@@ -146,8 +146,9 @@ pub struct App {
     ctx: egui::Context,
     /// Exécution choisie pendant qu'elle tournait : marquée lue à sa fin si elle est toujours affichée.
     read_when_done: Option<String>,
-    /// Synchronisation du Planificateur de Windows : faite (version des tâches), et ses problèmes.
-    windows_tasks: Option<(u64, Receiver<Vec<String>>)>,
+    /// Synchronisation du Planificateur de Windows : version des tâches de la dernière lancée, et sa
+    /// fin attendue (ses problèmes ; `None` une fois reçue).
+    windows_tasks: Option<(u64, Option<Receiver<Vec<String>>>)>,
     /// Essais : ni Planificateur ni registre.
     quiet: bool,
     /// Coût des sessions du mois, relu toutes les 5 s (barre d'état).
@@ -654,11 +655,20 @@ impl App {
         if self.quiet {
             return;
         }
-        if let Some((_, rx)) = &self.windows_tasks
-            && let Ok(problems) = rx.try_recv()
+        // Une synchronisation à la fois : deux qui se chevaucheraient pourraient retirer une tâche
+        // Windows que l'autre vient de créer. La suivante part quand la précédente a fini.
+        if let Some((_, slot)) = &mut self.windows_tasks
+            && let Some(rx) = slot
         {
-            for p in problems {
-                e.problem(p);
+            match rx.try_recv() {
+                Ok(problems) => {
+                    for p in problems {
+                        e.problem(p);
+                    }
+                    *slot = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => *slot = None,
             }
         }
         if self.windows_tasks.as_ref().is_some_and(|(v, _)| *v == e.tasks_version) {
@@ -668,7 +678,7 @@ impl App {
             e.loaded.iter().filter_map(|l| l.task.as_ref().ok().map(|t| (l.id.clone(), t.clone()))).collect();
         let data_dir = self.data_dir.clone();
         let (tx, rx) = channel();
-        self.windows_tasks = Some((e.tasks_version, rx));
+        self.windows_tasks = Some((e.tasks_version, Some(rx)));
         std::thread::spawn(move || {
             use patronus_core::winsched;
             let folder = winsched::folder(&data_dir, &patronus_core::fsutil::default_data_dir());

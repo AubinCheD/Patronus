@@ -219,6 +219,12 @@ impl RunStore {
                     // interrompue (la fenêtre et la ligne de commande partagent le dossier).
                     let elsewhere = run.proprietaire.is_some_and(|o| o.is_other_live_process());
                     if run.statut == Status::EnCours && !elsewhere {
+                        // Relue une fois le processus su mort : il a pu noter sa fin entre-temps.
+                        if let Some(again) = read_text(&path).ok().and_then(|t| serde_json::from_str::<Run>(&t).ok()) {
+                            run = again;
+                        }
+                    }
+                    if run.statut == Status::EnCours && !elsewhere {
                         run.statut = Status::Interrompue;
                         run.resume = "Patronus s'est arrêté pendant l'exécution.".into();
                         run.lu = false;

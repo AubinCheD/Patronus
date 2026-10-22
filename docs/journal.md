@@ -243,3 +243,15 @@ un avant correction.
   dues à la même heure passaient toutes deux. Les sessions en cours comptent maintenant pour leur
   budget (celles d'un autre processus aussi, d'après la boîte relue toutes les 5 s). Une ligne du
   registre des coûts part en une seule écriture.
+- **Concurrence entre processus (mineurs de la revue)** :
+  - verrou de tâche : un verrou tout juste créé, pas encore écrit, était pris pour un abandon et
+    effacé ; la reprise d'un abandon n'était pas atomique ; sa libération ne vérifiait pas qu'il
+    était le sien. Le fichier reste ouvert sans partage en suppression tant que le verrou est tenu :
+    Windows refuse de l'effacer tant que son processus vit, et le libère à sa mort ;
+  - une exécution d'un autre processus constaté mort est relue avant d'être dite « interrompue » (il
+    a pu noter sa fin juste avant) ;
+  - une seule synchronisation du Planificateur de Windows à la fois ;
+  - à l'ouverture de session, si le Planificateur rattrape déjà l'échéance, la fenêtre ne met pas un
+    second rattrapage en attente ;
+  - passage à l'heure d'été : une tâche réglée entre 2 h et 3 h part à 3 h sans être notée
+    « manquée (veille) ».
