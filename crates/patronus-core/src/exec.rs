@@ -51,9 +51,9 @@ impl Outcome {
 }
 
 #[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(windows)]
-const CREATE_SUSPENDED: u32 = 0x0000_0004;
+pub(crate) const CREATE_SUSPENDED: u32 = 0x0000_0004;
 
 /// Lance `cmd`, sortie standard et d'erreur ajoutées au journal, et attend sa fin, l'arrêt demandé
 /// (`stop`) ou la durée maximale. Rend le statut et le code de retour.

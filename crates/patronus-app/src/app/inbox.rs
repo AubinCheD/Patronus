@@ -267,18 +267,27 @@ impl App {
         let Some(shown) = &self.shown else { return };
         if let Some(diff) = &shown.diff {
             egui::CollapsingHeader::new(RichText::new("Diff proposé").strong()).default_open(true).show(ui, |ui| {
-                ScrollArea::vertical().id_salt("diff").max_height(240.0).show(ui, |ui| {
-                    for line in diff.lines() {
-                        let color = if line.starts_with('+') && !line.starts_with("+++") {
-                            p.ok
-                        } else if line.starts_with('-') && !line.starts_with("---") {
-                            p.danger
-                        } else {
-                            p.text_dim
-                        };
-                        ui.label(RichText::new(line).monospace().color(color));
-                    }
-                });
+                // Seules les lignes visibles sont dessinées : un gros diff (fichier de verrouillage)
+                // ne ralentit pas l'interface.
+                let lines: Vec<&str> = diff.lines().collect();
+                let row = ui.text_style_height(&egui::TextStyle::Monospace);
+                ScrollArea::both().id_salt("diff").max_height(240.0).auto_shrink([false, true]).show_rows(
+                    ui,
+                    row,
+                    lines.len(),
+                    |ui, range| {
+                        for line in &lines[range] {
+                            let color = if line.starts_with('+') && !line.starts_with("+++") {
+                                p.ok
+                            } else if line.starts_with('-') && !line.starts_with("---") {
+                                p.danger
+                            } else {
+                                p.text_dim
+                            };
+                            ui.add(egui::Label::new(RichText::new(*line).monospace().color(color)).extend());
+                        }
+                    },
+                );
             });
         }
         ui.label(RichText::new("Journal").strong());

@@ -59,7 +59,7 @@ Détail : [`docs/spec.md`](docs/spec.md).
 
 ## État
 
-Premier jet (octobre 2026) :
+Version 0.1 (octobre 2026 : premier jet, puis passe complète et revue) :
 - tâches en fichiers JSON (`<données>\taches\<id>.json`), éditables dans l'application, à partir
   d'un modèle ou d'une autre tâche (*Dupliquer*) ;
 - déclencheurs : heure (jours choisis, rattrapage facultatif), intervalle, fichier modifié, branche
@@ -166,8 +166,8 @@ Start-Process -Wait -NoNewWindow target\release\patronus.exe -ArgumentList 'lanc
 résultat arrive dans la boîte, que la fenêtre relit toutes les 5 s. `--donnees <dossier>` choisit le
 dossier de données.
 
-1. *+ Nouvelle tâche* : un nom, un déclencheur (*+ Heure*, *+ Intervalle* ou *+ Fichier modifié*),
-   une commande (par exemple `Get-Date` en PowerShell), *Enregistrer*.
+1. *+ Nouvelle tâche* : un nom, un déclencheur (*+ Heure*, *+ Intervalle*, *+ Fichier modifié* ou
+   *+ Branche distante*), une commande (par exemple `Get-Date` en PowerShell), *Enregistrer*.
 2. *▶* sur la tâche, ou attendre son échéance, ou modifier un fichier du dossier surveillé.
 3. Le résultat arrive dans la *Boîte de résultats* (compteur des non lus dans le titre), avec son
    journal. Fermer et rouvrir : il y est toujours.

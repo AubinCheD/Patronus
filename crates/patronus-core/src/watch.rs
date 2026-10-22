@@ -143,8 +143,8 @@ mod tests {
     /// caractère et faisait paniquer l'application (« end byte index is not a char boundary »).
     #[test]
     fn accented_paths_do_not_panic() {
-        let m = Matcher::new(&FileWatch { dossier: PathBuf::from(r"C:\Users\x\Documents\ab"), ..Default::default() });
-        assert!(!m.matches(Path::new(r"C:\Users\x\Documents\Réunions\cr.md")));
+        let m = Matcher::new(&FileWatch { dossier: PathBuf::from(r"C:\donnees\Documents\ab"), ..Default::default() });
+        assert!(!m.matches(Path::new(r"C:\donnees\Documents\Réunions\cr.md")));
         let m = Matcher::new(&FileWatch { dossier: PathBuf::from(r"C:\dev\Réunions"), ..Default::default() });
         assert!(m.matches(Path::new(r"c:\DEV\réunions\compte-rendu.md")), "casse ignorée, accents compris");
         assert!(m.matches(Path::new("C:/dev/Réunions/notes/été.md")), "barres obliques dans les deux sens");

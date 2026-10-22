@@ -341,7 +341,21 @@ impl App {
                     self.selected_run = Some(r.id.clone());
                 }
             }
-            Act::Stop(id) => e.stop(&id),
+            Act::Stop(id) => {
+                if !e.is_running(&id)
+                    && let Some(owner) = e.running_elsewhere(&id)
+                {
+                    self.toast(
+                        format!(
+                            "Menée par un autre processus de Patronus (n° {}, ligne de commande ou Planificateur) : \
+                             elle ne s'arrête pas d'ici.",
+                            owner.pid
+                        ),
+                        self.palette.warn,
+                    );
+                }
+                e.stop(&id);
+            }
             Act::StopAll => {
                 let n = e.running_count();
                 e.stop_all();

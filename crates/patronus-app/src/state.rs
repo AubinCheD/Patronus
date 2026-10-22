@@ -130,6 +130,7 @@ mod tests {
         assert_eq!(st.retention_jours, 14);
         assert!(!st.notifications);
         assert_eq!(st.autres["champ_futur"], 42);
+        assert_eq!(st.zoom, 1.0, "champ ajouté depuis : valeur par défaut");
         let again: Value = serde_json::from_slice(&serialize(&st)).unwrap();
         assert_eq!(again["champ_futur"], 42, "champ inconnu gardé");
         assert_eq!(again["saved_by"], env!("CARGO_PKG_VERSION"));

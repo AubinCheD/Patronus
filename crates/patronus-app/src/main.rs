@@ -66,25 +66,36 @@ fn parse(args: &[String]) -> Result<(Option<PathBuf>, Cli), String> {
 fn run_cli(data_dir: &Path, task_id: &str) -> ExitCode {
     use patronus_core::{engine::Engine, exec::Context, run::now};
     let mut engine = Engine::open_headless(data_dir, now());
-    if engine.task(task_id).is_none() {
-        let known: Vec<_> = engine.loaded.iter().map(|l| l.id.as_str()).collect();
-        eprintln!("Tâche inconnue : {task_id}. Tâches : {}", known.join(", "));
-        return ExitCode::from(2);
+    match engine.loaded.iter().find(|l| l.id == task_id) {
+        None => {
+            let known: Vec<_> = engine.loaded.iter().map(|l| l.id.as_str()).collect();
+            eprintln!("Tâche inconnue : {task_id}. Tâches : {}", known.join(", "));
+            return ExitCode::from(2);
+        }
+        Some(l) if l.task.is_err() => {
+            let why = l.task.as_ref().err().cloned().unwrap_or_default();
+            eprintln!("Tâche illisible : {task_id} ({why}) ; corriger le fichier {}", l.path.display());
+            return ExitCode::from(2);
+        }
+        Some(_) => {}
     }
-    if let Err(why) = engine.try_launch(
+    let before: Vec<String> = engine.runs.iter().map(|r| r.id.clone()).collect();
+    let launched = engine.try_launch(
         task_id,
         Context { trigger: "ligne de commande".into(), files: vec![], ..Default::default() },
         now(),
-    ) && engine.running_elsewhere(task_id).is_some()
-    {
-        eprintln!("{why}");
+    );
+    // L'entrée de ce lancement (partie, ou refusée : « impossible ») ; aucune si la tâche tournait déjà.
+    let Some(id) = engine.runs.iter().find(|r| r.tache == task_id && !before.contains(&r.id)).map(|r| r.id.clone())
+    else {
+        eprintln!("{}", launched.err().unwrap_or_default());
         return ExitCode::from(3);
-    }
+    };
     while engine.is_running(task_id) {
         std::thread::sleep(std::time::Duration::from_millis(100));
         engine.tick(now());
     }
-    let Some(run) = engine.runs.iter().find(|r| r.tache == task_id) else { return ExitCode::FAILURE };
+    let Some(run) = engine.runs.iter().find(|r| r.id == id) else { return ExitCode::FAILURE };
     println!("{} : {}\n{}", run.tache_nom, run.statut.label(), run.resume);
     if run.statut.is_ok() { ExitCode::SUCCESS } else { ExitCode::FAILURE }
 }

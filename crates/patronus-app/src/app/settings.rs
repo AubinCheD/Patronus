@@ -24,7 +24,7 @@ impl App {
                 ui.label("Taille de l'interface");
                 ui.horizontal(|ui| {
                     let z = ctx.zoom_factor();
-                    if ui.small_button("−").on_hover_text("Ctrl+Moins, Ctrl+molette").clicked() {
+                    if ui.small_button(icons::MINUS).on_hover_text("Ctrl+Moins, Ctrl+molette").clicked() {
                         super::set_zoom(ctx, z - 0.1);
                     }
                     ui.label(format!("{:.0} %", z * 100.0));

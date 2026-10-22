@@ -23,12 +23,21 @@ fn git(repo: &Path, args: &[&str], timeout: Duration) -> Result<String, String> 
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Créé suspendu et rangé dans un objet de tâche, comme les scripts : au délai dépassé, ses
+    // enfants (ssh, assistant d'identifiants) s'arrêtent avec lui.
+    let job = crate::winproc::Job::new();
     #[cfg(windows)]
     {
+        use crate::exec::{CREATE_NO_WINDOW, CREATE_SUSPENDED};
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000);
+        cmd.creation_flags(CREATE_NO_WINDOW | if job.is_some() { CREATE_SUSPENDED } else { 0 });
     }
     let mut child = cmd.spawn().map_err(|e| format!("git introuvable : {e}"))?;
+    let suspended = job.is_some();
+    let job = job.filter(|j| j.assign(&child));
+    if suspended {
+        crate::winproc::resume_threads(child.id());
+    }
     let read = |mut r: Box<dyn Read + Send>| {
         std::thread::spawn(move || {
             let mut s = Vec::new();
@@ -44,7 +53,12 @@ fn git(repo: &Path, args: &[&str], timeout: Duration) -> Result<String, String> 
             break st;
         }
         if start.elapsed() > timeout {
-            let _ = child.kill();
+            match &job {
+                Some(j) => j.terminate(),
+                None => {
+                    let _ = child.kill();
+                }
+            }
             let _ = child.wait();
             return Err(format!("git {} : pas de réponse en {} s", args.first().unwrap_or(&""), timeout.as_secs()));
         }

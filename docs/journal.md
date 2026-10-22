@@ -255,3 +255,16 @@ un avant correction.
     second rattrapage en attente ;
   - passage à l'heure d'été : une tâche réglée entre 2 h et 3 h part à 3 h sans être notée
     « manquée (veille) ».
+- **Mineurs d'interface et de ligne de commande** : « Arrêter » sur une exécution menée par un autre
+  processus le dit au lieu de ne rien faire ; le diff ne dessine que ses lignes visibles ; `lancer`
+  affiche le résultat de son propre lancement (et pas le précédent si la tâche tournait déjà) et
+  distingue une tâche illisible d'une tâche inconnue ; l'identifiant de tâche est entre guillemets
+  dans la commande du Planificateur, le dossier de données sans barre oblique finale dans celle du
+  démarrage avec Windows ; un relevé de branche trop long arrête git et ses enfants (objet de tâche) ;
+  WebFetch dans les outils d'une session donne un avertissement (fuite possible de ce que la session
+  a lu). L'état de référence de `state.json` existait déjà (le relecteur l'avait manqué) ; il vérifie
+  aussi le zoom ajouté depuis.
+- **Laissé de côté, après examen** : « Tout marquer comme lu » enregistre chaque entrée dans le fil de
+  l'interface (sur un clic, pas à chaque image) ; la session reprise par `claude --resume` n'a ni mode
+  restreint ni garde-fou de push (l'utilisateur pilote) ; le commit 906c5ca ne compile pas seul (déjà
+  noté plus haut).

@@ -354,6 +354,15 @@ impl Task {
                     .into(),
             );
         }
+        if let Some(c) = &self.action.claude
+            && c.outils.iter().any(|t| tool_name(t) == "WebFetch")
+        {
+            out.push(
+                "WebFetch : la session peut envoyer à une adresse web ce qu'elle a lu du dépôt (il suffit d'une \
+                 consigne piégée dans un fichier). À réserver aux dépôts de confiance."
+                    .into(),
+            );
+        }
         out
     }
 
@@ -762,6 +771,8 @@ mod tests {
         assert!(t.validate().is_empty());
         assert!(t.warnings()[0].contains("Bash sans restriction"));
         assert!(claude_task(&["Bash(npm outdated)"], true, true).warnings().is_empty());
+        let web = claude_task(&["Read", "WebFetch(domain:contoso.com)"], true, true).warnings();
+        assert!(web.len() == 1 && web[0].starts_with("WebFetch"), "{web:?}");
         assert_eq!(tool_name(" Bash(git log *) "), "Bash");
     }
 

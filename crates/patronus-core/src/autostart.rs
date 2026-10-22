@@ -65,7 +65,9 @@ fn command_for(exe: &Path, data_dir: &Path) -> String {
     if crate::winsched::folder(data_dir, &default) == "Patronus" {
         format!("\"{}\" --reduit", exe.display())
     } else {
-        format!("\"{}\" --donnees \"{}\" --reduit", exe.display(), data_dir.display())
+        // Sans barre oblique finale : `\"` échapperait le guillemet fermant.
+        let dir = data_dir.to_string_lossy().replace('/', "\\");
+        format!("\"{}\" --donnees \"{}\" --reduit", exe.display(), dir.trim_end_matches('\\'))
     }
 }
 
@@ -164,10 +166,12 @@ mod tests {
             command_for(exe, &crate::fsutil::default_data_dir()),
             r#""C:\Program Files\Patronus\patronus.exe" --reduit"#
         );
-        assert_eq!(
-            command_for(exe, Path::new(r"D:\essais\patronus")),
-            r#""C:\Program Files\Patronus\patronus.exe" --donnees "D:\essais\patronus" --reduit"#
-        );
+        for dir in [r"D:\essais\patronus", r"D:\essais\patronus\", "D:/essais/patronus/"] {
+            assert_eq!(
+                command_for(exe, Path::new(dir)),
+                r#""C:\Program Files\Patronus\patronus.exe" --donnees "D:\essais\patronus" --reduit"#
+            );
+        }
     }
 
     /// Inscription, autre commande, désactivation par le Gestionnaire des tâches puis retrait : sur

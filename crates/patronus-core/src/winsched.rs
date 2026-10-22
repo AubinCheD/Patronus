@@ -61,7 +61,8 @@ fn day_tag(j: Jour) -> &'static str {
 /// il le neutraliserait.
 pub fn arguments(data_dir: &Path, id: &str) -> String {
     let dir = data_dir.to_string_lossy().replace('/', "\\");
-    format!("--donnees \"{}\" planifie {id}", dir.trim_end_matches('\\'))
+    // Entre guillemets : un nom de fichier de tâche écrit à la main peut contenir une espace.
+    format!("--donnees \"{}\" planifie \"{id}\"", dir.trim_end_matches('\\'))
 }
 
 /// Définition XML (format du Planificateur, version 1.2) de la tâche Windows d'une tâche Patronus.
@@ -287,8 +288,8 @@ mod tests {
 
     #[test]
     fn folder_is_shared_by_default_and_distinct_otherwise() {
-        let def = Path::new(r"C:\Users\x\AppData\Roaming\Patronus");
-        assert_eq!(folder(Path::new(r"c:\users\x\appdata\roaming\patronus\"), def), "Patronus");
+        let def = Path::new(r"D:\profil\AppData\Roaming\Patronus");
+        assert_eq!(folder(Path::new(r"d:\profil\appdata\roaming\patronus\"), def), "Patronus");
         let a = folder(Path::new(r"C:\Temp\essai"), def);
         assert!(a.starts_with("Patronus-") && a.len() == "Patronus-".len() + 8, "{a}");
         assert_eq!(a, folder(Path::new("C:/Temp/essai"), def));
@@ -313,7 +314,10 @@ mod tests {
         assert!(xml.contains("<StartWhenAvailable>true</StartWhenAvailable>"));
         assert!(xml.contains("<Description>Patronus : Point du matin &amp; co</Description>"));
         assert!(xml.contains("<Command>C:\\outils\\patronus.exe</Command>"));
-        assert!(xml.contains("<Arguments>--donnees &quot;C:\\donnees&quot; planifie point</Arguments>"), "{xml}");
+        assert!(
+            xml.contains("<Arguments>--donnees &quot;C:\\donnees&quot; planifie &quot;point&quot;</Arguments>"),
+            "{xml}"
+        );
         assert!(xml.contains("<ExecutionTimeLimit>PT40M</ExecutionTimeLimit>"));
     }
 
