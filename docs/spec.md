@@ -127,8 +127,8 @@ Exemple de tâche (fictif) :
 
 - L'interface dans l'application (ou le module de la suite) ; l'exécution des sessions visibles dans
   Fawkes quand on le souhaite.
-- **Quand l'application est fermée** : un petit service ou une tâche planifiée Windows lance les
-  exécutions dues ; l'interface les retrouve dans la boîte au démarrage.
+- **Quand l'application est fermée** : une tâche planifiée Windows lance les exécutions dues (voir
+  §11) ; l'interface les retrouve dans la boîte au démarrage.
 - **Claude Code** a ses propres sessions en arrière-plan et des routines programmées : à intégrer
   (les afficher, les lancer) plutôt qu'à refaire.
 
@@ -144,8 +144,21 @@ Exemple de tâche (fictif) :
 
 ## 11. Questions ouvertes
 
-- Faut-il un service Windows permanent, ou une tâche planifiée par tâche suffit-elle ?
-- Où ranger les tâches propres à un dépôt sans polluer le dépôt (dossier dédié, fichier ignoré) ?
-- Comment présenter le coût (tokens, euros) quand le compte est un abonnement et non une clé d'API ?
-- Faut-il permettre l'enchaînement de tâches (le résultat de l'une déclenche l'autre) ?
-- Quelle rétention par défaut pour les journaux d'exécution ?
+Tranchées pendant la passe complète d'octobre 2026 (détail : `journal.md`) :
+
+- **Service Windows permanent, ou tâche planifiée ?** Une tâche du Planificateur de Windows par
+  tâche Patronus qui le demande (*Tourner aussi quand Patronus est fermé*), pour ses échéances
+  horaires seulement, sans droit administrateur ; pas de service permanent. Fichiers modifiés et
+  branches distantes demandent Patronus ouvert (au besoin lancé à l'ouverture de session, fenêtre
+  réduite).
+- **Coût avec un abonnement plutôt qu'une clé d'API ?** En tokens et en dollars « équivalent API »
+  (tarif public, pas une facture), jamais en euros ; c'est aussi l'unité des budgets, par session et
+  par mois.
+- **Rétention par défaut ?** 30 jours pour les résultats lus ou archivés, réglable ; un résultat non
+  lu n'est jamais effacé.
+
+Reportées (feuille de route, « Pistes ») :
+
+- Où ranger les tâches propres à un dépôt sans le polluer : `.patronus/<tâche>.json` reste la piste,
+  avec accord avant activation.
+- L'enchaînement de tâches (le résultat de l'une déclenche l'autre).

@@ -268,3 +268,8 @@ un avant correction.
   l'interface (sur un clic, pas à chaque image) ; la session reprise par `claude --resume` n'a ni mode
   restreint ni garde-fou de push (l'utilisateur pilote) ; le commit 906c5ca ne compile pas seul (déjà
   noté plus haut).
+- **Fin de la passe** : A1 à A13, B1 à B3, C1 à C6 faits, revue faite et ses constats corrigés ; B4
+  (premier essai d'une vraie session Claude) attend l'utilisateur, marche à suivre dans le README.
+  C6 est parti en quatre commits (pause ; boîte et duplication ; zoom et palette ; icône) plutôt
+  qu'un, pour qu'ils restent lisibles. Questions ouvertes de `spec.md` tranchées (§11). Rien n'a été
+  poussé.
