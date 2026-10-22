@@ -393,6 +393,15 @@ impl App {
                     None => self.toast("Aucun résultat non lu.", self.palette.text_dim),
                 }
             }
+            Command::PauseAll => {
+                let on = !e.paused();
+                e.set_paused(on, now());
+                if on {
+                    self.toast("En pause : aucun départ automatique.", self.palette.warn);
+                } else {
+                    self.toast("Reprise : les tâches partent de nouveau à leurs échéances.", self.palette.ok);
+                }
+            }
         }
     }
 
@@ -482,6 +491,18 @@ impl App {
             {
                 self.acts.push(Act::StopAll);
             }
+            let (label, tip) = if e.paused() {
+                ("Reprendre", "Les tâches repartent à leurs échéances et sur leurs événements")
+            } else {
+                ("Tout mettre en pause", "Aucun départ automatique ; le lancement à la main reste possible")
+            };
+            if ui
+                .selectable_label(e.paused(), label)
+                .on_hover_text(format!("{tip} ({})", self.shortcuts.text(Command::PauseAll)))
+                .clicked()
+            {
+                self.acts.push(Act::Command(Command::PauseAll));
+            }
             ui.separator();
             if ui.button("Commandes…").on_hover_text(self.shortcuts.text(Command::Palette)).clicked() {
                 self.palette_open = true;
@@ -499,6 +520,10 @@ impl App {
             if running > 0 {
                 ui.spinner();
                 ui.label(RichText::new(format!("{running} en cours")).color(p.running));
+                ui.separator();
+            }
+            if e.paused() {
+                ui.label(RichText::new("En pause : aucun départ automatique").strong().color(p.warn));
                 ui.separator();
             }
             let next = e

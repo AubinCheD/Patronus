@@ -53,3 +53,20 @@ fn idle_window_settles() {
     let mut h = app(&dir);
     assert!(settles(&mut h));
 }
+
+#[test]
+fn general_pause_button() {
+    let dir = temp("pause-generale");
+    script_task(&dir, "bonjour", "Bonjour contoso", "echo bonjour");
+    let mut h = app(&dir);
+    click(&mut h, "Tout mettre en pause");
+    wait_until(&mut h, "pause affichée", |h| shows(h, "En pause : aucun départ automatique"));
+    assert!(h.state().engine().paused());
+    click(&mut h, "▶");
+    wait_until(&mut h, "lancement à la main malgré la pause", |h| {
+        h.state().engine().runs.first().is_some_and(|r| r.statut == Status::Reussie)
+    });
+    click(&mut h, "Reprendre");
+    wait_until(&mut h, "reprise", |h| !shows(h, "En pause : aucun départ automatique"));
+    assert!(!h.state().engine().paused());
+}

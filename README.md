@@ -82,6 +82,9 @@ Premier jet (octobre 2026) :
 - garde-fous : durée maximale, une exécution à la fois par tâche (un départ en attente au plus),
   arrêt par tâche ou global, journal complet, tâche invalide ou soupçonnée de contenir un secret
   refusée ;
+- pause générale (*Tout mettre en pause*, Ctrl+Maj+P) : aucun départ automatique, Planificateur
+  compris, le lancement à la main reste possible ; retenue au redémarrage ; ce qui était dû pendant
+  la pause n'est pas « manqué » ;
 - boîte de résultats : statut, résumé, liens, journal, filtres, non lus, archivage ; elle survit au
   redémarrage ; une exécution manquée (Patronus fermé) y est signalée, une exécution coupée par un
   arrêt de Patronus y apparaît « interrompue » ;

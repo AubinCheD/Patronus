@@ -13,10 +13,11 @@ pub enum Command {
     Palette,
     Settings,
     NextUnread,
+    PauseAll,
 }
 
 impl Command {
-    pub const ALL: [Command; 7] = [
+    pub const ALL: [Command; 8] = [
         Command::NewTask,
         Command::Inbox,
         Command::RunSelected,
@@ -24,6 +25,7 @@ impl Command {
         Command::Palette,
         Command::Settings,
         Command::NextUnread,
+        Command::PauseAll,
     ];
 
     /// Clé dans `state.json` : stable, ne pas traduire.
@@ -36,6 +38,7 @@ impl Command {
             Command::Palette => "palette",
             Command::Settings => "reglages",
             Command::NextUnread => "non_lu_suivant",
+            Command::PauseAll => "tout_suspendre",
         }
     }
 
@@ -48,6 +51,7 @@ impl Command {
             Command::Palette => "Palette de commandes",
             Command::Settings => "Réglages",
             Command::NextUnread => "Résultat non lu suivant",
+            Command::PauseAll => "Tout mettre en pause ou reprendre",
         }
     }
 
@@ -62,6 +66,7 @@ impl Command {
             Command::Palette => Binding::new(ctrl, Key::P),
             Command::Settings => Binding::new(ctrl, Key::Comma),
             Command::NextUnread => Binding::new(ctrl, Key::J),
+            Command::PauseAll => Binding::new(ctrl_shift, Key::P),
         }
     }
 }

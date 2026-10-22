@@ -33,6 +33,9 @@ pub struct Planning {
     /// Plafond mensuel des sessions Claude, en dollars (équivalent API) ; aucun si absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_mensuel_usd: Option<f64>,
+    /// Pause générale : aucun départ automatique (le lancement à la main reste possible).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub en_pause: bool,
     #[serde(flatten)]
     pub autres: BTreeMap<String, serde_json::Value>,
 }
@@ -573,6 +576,9 @@ impl Engine {
                 None => self.next.remove(&id),
             };
             changed = true;
+            if self.planning.en_pause {
+                continue;
+            }
             // Plus de 5 minutes de retard (ordinateur en veille, en hibernation) : comme une échéance
             // manquée application fermée, rattrapée seulement si la tâche le demande.
             if now - at > chrono::Duration::minutes(LATE_MINUTES) {
@@ -601,7 +607,7 @@ impl Engine {
                 Err(e) => self.problem(e),
             }
         }
-        if !changed_files.is_empty() {
+        if !changed_files.is_empty() && !self.planning.en_pause {
             changed_files.sort();
             changed_files.dedup();
             let hits: Vec<(String, Vec<PathBuf>)> = self
@@ -703,6 +709,9 @@ impl Engine {
         if !task.active || !task.hors_application {
             return Err("tâche en pause, ou qui ne tourne pas application fermée".into());
         }
+        if self.planning.en_pause {
+            return Err("Patronus est en pause".into());
+        }
         // Le Planificateur peut partir un peu en avance : l'échéance de la minute qui vient compte.
         let at =
             crate::schedule::latest_due(task, now + chrono::Duration::minutes(1)).ok_or("aucune échéance horaire")?;
@@ -741,6 +750,28 @@ impl Engine {
             .filter(|(id, _)| seen.insert(id.to_string()))
             .filter_map(|(_, usd)| usd.trim().parse::<f64>().ok())
             .sum()
+    }
+
+    pub fn paused(&self) -> bool {
+        self.planning.en_pause
+    }
+
+    /// Met tout en pause, ou reprend. Les échéances passées pendant la pause ne sont pas manquées :
+    /// la surveillance reprend à `now`.
+    pub fn set_paused(&mut self, on: bool, now: NaiveDateTime) {
+        self.planning.en_pause = on;
+        self.planning.derniere_verification = Some(now);
+        self.save_planning();
+        if !on {
+            // Une échéance passée pendant la pause (ordinateur en veille) n'est pas à tenir en retard.
+            let ids: Vec<String> = self.next.keys().cloned().collect();
+            for id in ids {
+                match self.task(&id).and_then(|t| next_due(t, now)) {
+                    Some(at) => self.next.insert(id, at),
+                    None => self.next.remove(&id),
+                };
+            }
+        }
     }
 
     pub fn monthly_budget(&self) -> Option<f64> {
@@ -864,10 +895,15 @@ impl Engine {
                         ],
                         notes,
                     };
-                    self.launch(&task_id, ctx, now);
+                    if !self.planning.en_pause {
+                        self.launch(&task_id, ctx, now);
+                    }
                     changed = true;
                 }
             }
+        }
+        if self.planning.en_pause {
+            return changed;
         }
         let due = Instant::now();
         let mut polls = Vec::new();
@@ -1050,7 +1086,8 @@ impl Engine {
     /// sinon signalé dans la boîte. Une tâche dont le fichier a été créé ou modifié pendant la
     /// fermeture n'a pas de départ manqué d'avant.
     fn report_missed(&mut self, now: NaiveDateTime) {
-        if let Some(last) = self.planning.derniere_verification {
+        // En pause, rien n'est dû : rien n'est manqué.
+        if let Some(last) = self.planning.derniere_verification.filter(|_| !self.planning.en_pause) {
             let tasks: Vec<(String, Task, NaiveDateTime)> = self
                 .loaded
                 .iter()
@@ -1838,6 +1875,44 @@ mod tests {
         assert_eq!(e.runs[0].statut, Status::Reussie, "{}", e.runs[0].resume);
         assert_eq!(e.runs[0].liens, ["https://contoso.com/pr/7"]);
         assert_eq!(Engine::open(&dir, now).runs[0].liens, ["https://contoso.com/pr/7"], "enregistrés");
+    }
+
+    /// Pause générale : aucun départ automatique, le lancement à la main reste possible ; retenue à
+    /// la réouverture ; ce qui était dû pendant la pause n'est pas « manqué ».
+    #[test]
+    fn general_pause() {
+        let dir = test_dir("engine-pause");
+        let (exec, counter) = fake(Duration::ZERO);
+        let mut e = Engine::open_with(&dir, at(21, 7, 0), Some(exec.clone()), Duration::from_millis(200));
+        let mut t = task("x", vec![Trigger::Heure { heure: "08:00".into(), jours: vec![], rattrapage: true }]);
+        t.hors_application = true;
+        let id = e.save_task(Some("matin"), &t, at(21, 7, 0)).unwrap();
+        e.set_paused(true, at(21, 7, 30));
+        e.tick(at(21, 8, 0));
+        wait_idle(&mut e, at(21, 8, 0));
+        assert!(counter.all().is_empty(), "rien d'automatique");
+        assert!(e.planned_run(&id, at(21, 8, 0)).unwrap_err().contains("pause"), "Planificateur compris");
+        e.launch(&id, by_hand(), at(21, 8, 5));
+        wait_idle(&mut e, at(21, 8, 5));
+        assert_eq!(counter.all(), ["à la main"]);
+        e.shutdown(at(21, 8, 10), Duration::from_secs(1));
+        drop(e);
+        // Rouvert le lendemain, toujours en pause : l'échéance du 22 n'est ni manquée ni rattrapée.
+        let mut e = Engine::open_with(&dir, at(22, 9, 0), Some(exec.clone()), Duration::from_millis(200));
+        assert!(e.paused());
+        wait_idle(&mut e, at(22, 9, 0));
+        assert_eq!(counter.all(), ["à la main"]);
+        assert!(e.runs.iter().all(|r| r.statut != Status::Manquee));
+        // Ordinateur en veille pendant la pause : à la reprise, l'échéance passée n'est pas tenue.
+        e.set_paused(false, at(23, 8, 30));
+        e.tick(at(23, 8, 31));
+        wait_idle(&mut e, at(23, 8, 31));
+        assert_eq!(counter.all(), ["à la main"]);
+        assert!(e.runs.iter().all(|r| r.statut != Status::Manquee));
+        assert_eq!(e.next_run(&id), Some(at(24, 8, 0)));
+        e.tick(at(24, 8, 0));
+        wait_idle(&mut e, at(24, 8, 0));
+        assert_eq!(counter.all(), ["à la main", "échéance de 08:00"], "reprise");
     }
 
     /// `planifie` : la dernière échéance à tenir, ou pourquoi il n'y a rien à faire.

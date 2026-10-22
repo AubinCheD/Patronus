@@ -194,3 +194,8 @@ sur ses propres écritures), dix importants, douze mineurs : tous retenus (A1 à
   autres (`Set-Content`). Les liens sont relevés dans le résumé puis la fin de la sortie, sans les
   lignes `[patronus]` (qui citent la commande) ; seuls `http://` et `https://` s'ouvrent, par le
   navigateur par défaut.
+- **C6, pause générale** : retenue dans `planning.json` (le Planificateur la lit aussi : `planifie`
+  ne fait rien en pause). Pendant la pause, les échéances avancent sans rien lancer, les fichiers
+  modifiés et les commits des branches distantes sont vus sans lancer de tâche. À la reprise, les
+  échéances sont recalculées : une échéance passée pendant une veille en pause n'est ni rattrapée ni
+  signalée (le test l'a vérifié en retirant le correctif : elle était rattrapée).
