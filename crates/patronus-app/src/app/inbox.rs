@@ -13,11 +13,19 @@ use super::{Act, App};
 impl App {
     /// Les exécutions affichées, d'après les filtres.
     pub(super) fn visible_runs<'e>(&self, e: &'e Engine) -> Vec<&'e Run> {
+        let words: Vec<String> = self.inbox_query.split_whitespace().map(str::to_lowercase).collect();
         e.runs
             .iter()
             .filter(|r| self.filter_task.as_ref().is_none_or(|f| &r.tache == f))
             .filter(|r| !self.unread_only || !r.lu)
             .filter(|r| self.show_archived || !r.archive)
+            .filter(|r| {
+                words.is_empty() || {
+                    let text =
+                        format!("{} {} {} {}", r.tache_nom, r.resume, r.declencheur, r.statut.label()).to_lowercase();
+                    words.iter().all(|w| text.contains(w))
+                }
+            })
             .collect()
     }
 
@@ -44,9 +52,33 @@ impl App {
                 ui.checkbox(&mut self.unread_only, "Non lus");
                 ui.checkbox(&mut self.show_archived, "Archivés");
             });
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.inbox_query)
+                        .hint_text("Rechercher (tâche, résumé, déclencheur)")
+                        .desired_width(ui.available_width() - 150.0),
+                );
+                let unread: Vec<String> = self
+                    .visible_runs(e)
+                    .into_iter()
+                    .filter(|r| !r.lu && r.statut != Status::EnCours)
+                    .map(|r| r.id.clone())
+                    .collect();
+                if ui
+                    .add_enabled(!unread.is_empty(), egui::Button::new("Tout marquer comme lu"))
+                    .on_hover_text("Les résultats affichés")
+                    .clicked()
+                {
+                    for id in &unread {
+                        e.mark_read(id, true);
+                    }
+                }
+            });
             ui.separator();
             let runs: Vec<Run> = self.visible_runs(e).into_iter().cloned().collect();
-            if runs.is_empty() {
+            if runs.is_empty() && !e.runs.is_empty() {
+                ui.label(RichText::new("Aucun résultat avec ces filtres.").color(p.text_dim));
+            } else if runs.is_empty() {
                 ui.label(
                     RichText::new(format!(
                         "Rien pour l'instant. Lancez une tâche ({}) ou attendez son échéance.",

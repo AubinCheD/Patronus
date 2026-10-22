@@ -60,7 +60,8 @@ Détail : [`docs/spec.md`](docs/spec.md).
 ## État
 
 Premier jet (octobre 2026) :
-- tâches en fichiers JSON (`<données>\taches\<id>.json`), éditables dans l'application ;
+- tâches en fichiers JSON (`<données>\taches\<id>.json`), éditables dans l'application, à partir
+  d'un modèle ou d'une autre tâche (*Dupliquer*) ;
 - déclencheurs : heure (jours choisis, rattrapage facultatif), intervalle, fichier modifié, branche
   distante qui avance (`git ls-remote`, sans rien écrire ; la tâche reçoit la liste des nouveaux
   commits, dans sa consigne ou `PATRONUS_BRANCHE`, `PATRONUS_COMMIT_AVANT`,
@@ -85,9 +86,9 @@ Premier jet (octobre 2026) :
 - pause générale (*Tout mettre en pause*, Ctrl+Maj+P) : aucun départ automatique, Planificateur
   compris, le lancement à la main reste possible ; retenue au redémarrage ; ce qui était dû pendant
   la pause n'est pas « manqué » ;
-- boîte de résultats : statut, résumé, liens, journal, filtres, non lus, archivage ; elle survit au
-  redémarrage ; une exécution manquée (Patronus fermé) y est signalée, une exécution coupée par un
-  arrêt de Patronus y apparaît « interrompue » ;
+- boîte de résultats : statut, résumé, liens, journal, filtres, recherche, non lus (*Tout marquer
+  comme lu*), archivage ; elle survit au redémarrage ; une exécution manquée (Patronus fermé) y est
+  signalée, une exécution coupée par un arrêt de Patronus y apparaît « interrompue » ;
 - actions sur un résultat, toujours après confirmation : appliquer le diff d'une session dans la
   copie de travail (sans commit), supprimer son worktree, reprendre la session (`claude --resume`,
   dans Windows Terminal ou PowerShell), copier le résumé ;

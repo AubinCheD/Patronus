@@ -31,6 +31,15 @@ impl Editor {
         Editor { id, original: task.clone(), task, tools, error: None, confirm_delete: false }
     }
 
+    /// Une copie de `task`, nouvelle tâche pas encore enregistrée (donc à confirmer avant de la perdre).
+    pub fn duplicate(task: &Task) -> Editor {
+        let mut copy = task.clone();
+        copy.nom = format!("{} (copie)", task.nom.trim());
+        let mut ed = Editor::new(None, copy);
+        ed.original = Task::new_script("");
+        ed
+    }
+
     /// Des modifications ne sont pas enregistrées.
     pub fn dirty(&self) -> bool {
         self.built() != self.original
@@ -353,6 +362,11 @@ impl App {
                 }
                 if ui.button("Fermer").clicked() {
                     close = true;
+                }
+                if let Some(id) = &ed.id
+                    && ui.button("Dupliquer").on_hover_text("Une nouvelle tâche, copie de celle-ci").clicked()
+                {
+                    self.acts.push(Act::Duplicate(id.clone()));
                 }
                 if ed.id.is_some() {
                     if ed.confirm_delete {

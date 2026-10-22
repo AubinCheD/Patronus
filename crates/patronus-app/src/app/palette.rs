@@ -12,6 +12,7 @@ enum Entry {
     Run(String),
     Pause(String, bool),
     Edit(String),
+    Duplicate(String),
     PollBranches,
 }
 
@@ -31,6 +32,7 @@ impl App {
                 let verb = if t.active { "Mettre en pause" } else { "Réactiver" };
                 entries.push((format!("{verb} : {}", t.nom), Entry::Pause(l.id.clone(), !t.active)));
                 entries.push((format!("Modifier : {}", t.nom), Entry::Edit(l.id.clone())));
+                entries.push((format!("Dupliquer : {}", t.nom), Entry::Duplicate(l.id.clone())));
             }
         }
         let branches = e
@@ -75,6 +77,7 @@ impl App {
                 Entry::Run(id) => Act::Run(id.clone()),
                 Entry::Pause(id, on) => Act::Toggle(id.clone(), *on),
                 Entry::Edit(id) => Act::Edit(id.clone()),
+                Entry::Duplicate(id) => Act::Duplicate(id.clone()),
                 Entry::PollBranches => Act::PollBranches,
             };
             self.acts.push(act);

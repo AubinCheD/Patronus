@@ -48,6 +48,8 @@ enum Act {
     Stop(String),
     StopAll,
     Edit(String),
+    /// Nouvelle tâche, copie d'une autre (brouillon à enregistrer).
+    Duplicate(String),
     NewTask,
     Toggle(String, bool),
     SelectRun(String),
@@ -99,6 +101,8 @@ pub struct App {
     selected_run: Option<String>,
     editor: Option<Editor>,
     filter_task: Option<String>,
+    /// Recherche dans la boîte (tâche, résumé, déclencheur).
+    inbox_query: String,
     unread_only: bool,
     show_archived: bool,
     show_settings: bool,
@@ -187,6 +191,7 @@ impl App {
             selected_run,
             editor: None,
             filter_task: None,
+            inbox_query: String::new(),
             unread_only: false,
             show_archived: false,
             show_settings: false,
@@ -282,7 +287,7 @@ impl App {
             && ed.dirty()
             && match &act {
                 Act::Edit(id) => ed.id.as_ref() != Some(id),
-                Act::NewTask | Act::CloseEditor => true,
+                Act::NewTask | Act::CloseEditor | Act::Duplicate(_) => true,
                 _ => false,
             }
         {
@@ -313,6 +318,12 @@ impl App {
             }
             Act::Edit(id) => self.open_editor(&id, e),
             Act::NewTask => self.new_task(),
+            Act::Duplicate(id) => {
+                if let Some(task) = e.task(&id) {
+                    self.editor = Some(Editor::duplicate(task));
+                    self.view = View::Editor;
+                }
+            }
             Act::Toggle(id, active) => {
                 if let Some(mut task) = e.task(&id).cloned() {
                     task.active = active;
