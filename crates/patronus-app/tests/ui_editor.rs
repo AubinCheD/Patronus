@@ -86,3 +86,21 @@ fn f5_launches_the_selected_task() {
     h.key_press(eframe::egui::Key::F5);
     wait_until(&mut h, "tâche lancée par F5", |h| !h.state().engine().runs.is_empty());
 }
+
+/// Une nouvelle tâche part d'un modèle ; le dépôt déjà saisi est gardé.
+#[test]
+fn task_from_template() {
+    let dir = temp("modele");
+    let mut h = app(&dir);
+    click(&mut h, "+ Nouvelle tâche");
+    type_in(&mut h, r"facultatif : C:\dev\contoso-api", r"C:\dev\northwind");
+    click(&mut h, "Point du matin");
+    let draft = h.state().draft().unwrap();
+    assert_eq!(draft.nom, "Point du matin");
+    assert_eq!(draft.depot.as_deref(), Some(std::path::Path::new(r"C:\dev\northwind")));
+    assert!(!draft.declencheurs.is_empty());
+    assert!(draft.validate().is_empty(), "{:?}", draft.validate());
+    // Le modèle choisi devient la base : tant que rien n'est modifié, on peut encore en changer.
+    click(&mut h, "Tests réguliers");
+    assert_eq!(h.state().draft().unwrap().nom, "Tests réguliers");
+}

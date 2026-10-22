@@ -85,6 +85,24 @@ Premier jet (octobre 2026) :
   arrêt de Patronus y apparaît « interrompue » ;
 - notification Windows à la fin, thèmes, raccourcis réglables.
 
+### Premier essai réel d'une session Claude
+
+Les tests n'emploient qu'un faux `claude` (`faux-claude`) : le premier vrai lancement se fait à la
+main, et il est facturé sur le compte Claude du poste (quelques centimes au plus).
+
+1. *+ Nouvelle tâche*, *Dépôt* : un dépôt sans enjeu, puis le modèle *Essai Claude (lecture seule)* :
+   lecture seule, sans worktree, 0,10 $ et 5 tours au plus. *Enregistrer*.
+2. *▶*. Pendant la session, le journal se remplit (réponses de Claude, outils appelés).
+3. À la fin, vérifier :
+   - le résumé (la réponse de Claude) et le coût « équivalent API », exact (sans « ≈ ») ;
+   - la ligne de commande dans le journal : `--restricted`, `--tools Read,Grep,Glob`,
+     `--max-budget-usd 0.1`, `--max-turns 5` ;
+   - `sortie.jsonl` (flux brut) et `consigne.txt` dans le dossier de l'exécution (*Ouvrir le dossier*).
+4. Les arrêts : budget à 0,01 $ (« arrêtée par Claude Code : budget atteint ») ; 1 tour (« nombre de
+   tours ») ; *■* pendant la session (« arrêtée à la main », coût estimé « ≈ »).
+5. Une version de Claude Code qui ne connaît pas `--restricted` fait échouer l'exécution, et le
+   journal le dit : mettre Claude Code à jour.
+
 ### Fenêtre fermée
 
 Par défaut, une tâche ne tourne que lorsque Patronus est ouvert (les échéances manquées sont signalées

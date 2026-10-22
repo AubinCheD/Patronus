@@ -9,6 +9,7 @@ use patronus_core::run::now;
 use patronus_core::task::{
     ClaudeAction, FileWatch, Jour, PERMISSION_MODES, RemoteBranch, Script, Shell, Task, Trigger, Worktree,
 };
+use patronus_core::templates::templates;
 
 use super::widgets::patterns_edit;
 use super::{Act, App, View};
@@ -33,6 +34,13 @@ impl Editor {
     /// Des modifications ne sont pas enregistrées.
     pub fn dirty(&self) -> bool {
         self.built() != self.original
+    }
+
+    /// Rien n'a changé, sauf peut-être le dépôt : un modèle peut encore remplacer la tâche.
+    pub fn untouched_but_repo(&self) -> bool {
+        let mut t = self.built();
+        t.depot.clone_from(&self.original.depot);
+        t == self.original
     }
 
     /// La tâche telle qu'elle sera enregistrée.
@@ -61,6 +69,19 @@ impl App {
             ui.heading(if ed.id.is_some() { "Modifier la tâche" } else { "Nouvelle tâche" });
             if let Some(id) = &ed.id {
                 ui.label(RichText::new(format!("Fichier : taches\\{id}.json")).small().color(p.text_dim));
+            }
+            // Une nouvelle tâche encore intacte peut partir d'un modèle (le dépôt saisi est gardé).
+            if ed.id.is_none() && ed.untouched_but_repo() {
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("Partir d'un modèle :").color(p.text_dim));
+                    for t in templates() {
+                        if ui.button(t.nom).on_hover_text(t.description).clicked() {
+                            let depot = ed.task.depot.clone();
+                            ed = Editor::new(None, t.task(depot));
+                        }
+                    }
+                });
             }
             ui.add_space(6.0);
             egui::Grid::new("general").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
