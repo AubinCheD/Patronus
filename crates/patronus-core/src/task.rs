@@ -21,6 +21,9 @@ pub struct Task {
     /// En pause quand faux : seuls les lancements à la main partent.
     #[serde(default = "yes")]
     pub active: bool,
+    /// Ses échéances horaires partent aussi quand Patronus est fermé (tâche du Planificateur de Windows).
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub hors_application: bool,
     #[serde(default)]
     pub declencheurs: Vec<Trigger>,
     pub action: Action,
@@ -330,6 +333,7 @@ impl Task {
             nom: nom.to_string(),
             depot: None,
             active: true,
+            hors_application: false,
             declencheurs: Vec::new(),
             action: Action { script: Some(Script::default()), ..Default::default() },
             garde_fous: Guards::default(),

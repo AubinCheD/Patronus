@@ -163,3 +163,16 @@ sur ses propres écritures), dix importants, douze mineurs : tous retenus (A1 à
   éditeur qui relève périodiquement, pour que la tâche puisse travailler sur `origin/main` ; jamais
   la copie de travail ni les branches locales. Les tests font avancer le « distant » par des commits
   faits chez lui (aucun push).
+
+## 22/10/2026 (nuit) — reprise automatique à 2 h 05
+
+- **B3, essai réel** (exécutable de version finale, dossier de données d'essai) : tâche à 02:12 avec
+  *Tourner aussi quand Patronus est fermé* ; la fenêtre, ouverte quelques secondes, l'a inscrite au
+  Planificateur (`\Patronus-9489fde0\essai-planificateur`, commande `patronus.exe --donnees <dossier>
+  planifie essai-planificateur`) puis s'est fermée. À 02:12:00, Windows a lancé la tâche, réussie en
+  une seconde, résultat dans la boîte et ligne dans `planificateur.log`. Fenêtre rouverte : le
+  résultat y est, pas de « manquée ». Case décochée : la tâche Windows et son dossier ont disparu du
+  Planificateur (vérifié). Le test d'inscription réelle (ignoré par défaut) a été lancé aussi.
+- **B3, décision** : `schtasks` ne sait pas supprimer un dossier du Planificateur ; quand il n'y a
+  plus de tâche Patronus, le dossier vide est supprimé par l'interface COM du Planificateur
+  (PowerShell), pour ne rien laisser derrière.

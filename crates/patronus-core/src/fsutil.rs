@@ -9,6 +9,11 @@ pub fn data_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("PATRONUS_DATA_DIR") {
         return PathBuf::from(dir);
     }
+    default_data_dir()
+}
+
+/// `%APPDATA%Patronus`, le dossier de données habituel.
+pub fn default_data_dir() -> PathBuf {
     dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("Patronus")
 }
 

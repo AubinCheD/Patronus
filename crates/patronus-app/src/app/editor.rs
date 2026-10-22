@@ -79,6 +79,18 @@ impl App {
                 ui.label("Active");
                 ui.checkbox(&mut ed.task.active, "part à ses échéances (sinon : en pause, à la main seulement)");
                 ui.end_row();
+                ui.label("Fenêtre fermée");
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut ed.task.hors_application, "tourner aussi quand Patronus est fermé").on_hover_text(
+                        "Ses échéances horaires (heure, intervalle) partent aussi fenêtre fermée, par une tâche du \
+                         Planificateur de Windows (dossier Patronus). Fichiers modifiés et branches distantes \
+                         demandent Patronus ouvert.",
+                    );
+                    if ed.task.hors_application && !patronus_core::winsched::has_time_trigger(&ed.task) {
+                        ui.label(RichText::new("(aucune échéance horaire : sans effet)").small().color(p.warn));
+                    }
+                });
+                ui.end_row();
             });
 
             ui.add_space(8.0);

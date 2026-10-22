@@ -172,6 +172,8 @@ pub struct Engine {
     maintenance_due: bool,
     /// Fermeture demandée : plus aucun départ.
     shutting_down: bool,
+    /// Augmente à chaque relecture des tâches (l'interface resynchronise alors le Planificateur).
+    pub tasks_version: u64,
     /// Branches distantes : prochain relevé, relevés en cours, résultats.
     branch_next: HashMap<String, Instant>,
     branch_busy: BTreeSet<String>,
@@ -233,6 +235,7 @@ impl Engine {
             last_refresh: Instant::now(),
             maintenance_due: !opts.headless,
             shutting_down: false,
+            tasks_version: 0,
             branch_next: HashMap::new(),
             branch_busy: BTreeSet::new(),
             branch_tx,
@@ -252,6 +255,7 @@ impl Engine {
     /// Relit les tâches depuis le disque, recalcule les échéances et la surveillance des fichiers.
     pub fn reload_tasks(&mut self, now: NaiveDateTime) {
         self.loaded = self.tasks.load_all();
+        self.tasks_version += 1;
         self.next.clear();
         self.matchers.clear();
         for l in &self.loaded {
@@ -661,6 +665,34 @@ impl Engine {
         }
     }
 
+    /// Une exécution de la tâche a-t-elle commencé à l'échéance `at` ou après (une minute de tolérance),
+    /// quel que soit le processus qui l'a menée ?
+    pub fn already_done(&self, task_id: &str, at: NaiveDateTime) -> bool {
+        self.runs
+            .iter()
+            .any(|r| r.tache == task_id && r.statut != Status::Manquee && r.debut >= at - chrono::Duration::minutes(1))
+    }
+
+    /// Que faire quand le Planificateur de Windows lance `planifie <tâche>` (fenêtre fermée) : la
+    /// dernière échéance de la tâche, si elle reste à tenir, ou pourquoi il n'y a rien à faire.
+    pub fn planned_run(&self, task_id: &str, now: NaiveDateTime) -> Result<NaiveDateTime, String> {
+        let l = self.loaded.iter().find(|l| l.id == task_id).ok_or_else(|| format!("tâche inconnue : {task_id}"))?;
+        let task = l.task.as_ref().map_err(|e| format!("tâche illisible : {e}"))?;
+        if !l.problems.is_empty() {
+            return Err(format!("tâche invalide : {}", l.problems.join(" ")));
+        }
+        if !task.active || !task.hors_application {
+            return Err("tâche en pause, ou qui ne tourne pas application fermée".into());
+        }
+        // Le Planificateur peut partir un peu en avance : l'échéance de la minute qui vient compte.
+        let at =
+            crate::schedule::latest_due(task, now + chrono::Duration::minutes(1)).ok_or("aucune échéance horaire")?;
+        if self.already_done(task_id, at) {
+            return Err(format!("échéance de {} déjà tenue", at.format("%H:%M")));
+        }
+        Ok(at)
+    }
+
     /// Relève maintenant toutes les branches distantes (bouton « Vérifier maintenant », essais).
     pub fn poll_branches_now(&mut self) {
         self.branch_next.clear();
@@ -802,7 +834,7 @@ impl Engine {
     }
 
     /// Ajoute un problème à montrer, sans doublon.
-    fn problem(&mut self, text: String) {
+    pub fn problem(&mut self, text: String) {
         if !self.problems.contains(&text) {
             self.problems.push(text);
         }
@@ -909,6 +941,8 @@ impl Engine {
     /// Départs manqués d'une tâche : le plus récent rattrapé si un déclencheur le demande, sinon une
     /// entrée « manquée » qui dit pourquoi (`why`).
     fn handle_missed(&mut self, id: &str, task: &Task, missed: &[Missed], now: NaiveDateTime, why: &str) {
+        // Une échéance tenue ailleurs (Planificateur de Windows, ligne de commande) n'est pas manquée.
+        let missed: Vec<Missed> = missed.iter().filter(|m| !self.already_done(id, m.at)).cloned().collect();
         if missed.is_empty() {
             return;
         }
@@ -1521,5 +1555,48 @@ mod tests {
         e.tick(at(25, 2, 1));
         let p: Planning = serde_json::from_str(&std::fs::read_to_string(dir.join("planning.json")).unwrap()).unwrap();
         assert_eq!(p.derniere_verification, Some(at(25, 2, 1)));
+    }
+
+    /// Une échéance tenue par le Planificateur de Windows pendant que la fenêtre était fermée n'est pas
+    /// signalée « manquée » à son ouverture.
+    #[test]
+    fn missed_is_not_reported_when_done_elsewhere() {
+        let dir = test_dir("engine-tenue");
+        let mut e = Engine::open(&dir, at(20, 18, 0));
+        let heure = vec![Trigger::Heure { heure: "08:00".into(), jours: vec![], rattrapage: false }];
+        e.save_task(Some("matin"), &task("x", heure), at(20, 18, 0)).unwrap();
+        e.shutdown(at(20, 18, 0), Duration::from_secs(1));
+        drop(e);
+        backdate(&dir.join("taches"), at(20, 17, 0));
+        // Exécution menée par le Planificateur à 8 h, fenêtre fermée.
+        let mut run = Run::new("20261021-080001-matin".into(), "matin", "x", "Planificateur de Windows", at(21, 8, 0));
+        run.statut = Status::Reussie;
+        RunStore::new(dir.join("executions")).save(&run).unwrap();
+        let e = Engine::open(&dir, at(21, 10, 0));
+        assert!(
+            e.runs.iter().all(|r| r.statut != Status::Manquee),
+            "{:?}",
+            e.runs.iter().map(|r| &r.resume).collect::<Vec<_>>()
+        );
+    }
+
+    /// `planifie` : la dernière échéance à tenir, ou pourquoi il n'y a rien à faire.
+    #[test]
+    fn planned_run_decision() {
+        let dir = test_dir("engine-planifie");
+        let mut e = Engine::open_headless(&dir, at(21, 8, 0));
+        let mut t = task("echo x", vec![Trigger::Heure { heure: "08:00".into(), jours: vec![], rattrapage: false }]);
+        e.save_task(Some("matin"), &t, at(21, 8, 0)).unwrap();
+        assert!(e.planned_run("matin", at(21, 8, 0)).unwrap_err().contains("application fermée"));
+        t.hors_application = true;
+        e.save_task(Some("matin"), &t, at(21, 8, 0)).unwrap();
+        assert_eq!(e.planned_run("matin", at(21, 8, 0)), Ok(at(21, 8, 0)));
+        // Lancé quelques secondes avant l'heure : c'est l'échéance de 8 h.
+        assert_eq!(e.planned_run("matin", at(21, 7, 59)), Ok(at(21, 8, 0)));
+        let mut run = Run::new("r".into(), "matin", "x", "à la main", at(21, 8, 0));
+        run.statut = Status::Reussie;
+        e.runs.push(run);
+        assert!(e.planned_run("matin", at(21, 8, 1)).unwrap_err().contains("déjà tenue"));
+        assert!(e.planned_run("inconnue", at(21, 8, 0)).is_err());
     }
 }

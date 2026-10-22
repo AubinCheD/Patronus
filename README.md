@@ -85,7 +85,23 @@ Premier jet (octobre 2026) :
   arrêt de Patronus y apparaît « interrompue » ;
 - notification Windows à la fin, thèmes, raccourcis réglables.
 
-Les tâches ne tournent que lorsque Patronus est ouvert.
+### Fenêtre fermée
+
+Par défaut, une tâche ne tourne que lorsque Patronus est ouvert (les échéances manquées sont signalées
+à l'ouverture, ou rattrapées si la tâche le demande). La case *Tourner aussi quand Patronus est
+fermé* (`"hors_application": true`) inscrit ses échéances horaires (heure, intervalle) au
+Planificateur de tâches de Windows, dans le dossier `\Patronus\` (`\Patronus-<empreinte>\` pour un
+autre dossier de données), sans droit administrateur, seulement quand la session est ouverte. Le
+Planificateur lance alors `patronus.exe --donnees <dossier> planifie <tâche>` :
+
+- fenêtre ouverte, il ne fait rien (elle tient ses échéances) ;
+- échéance déjà tenue, il ne fait rien ;
+- sinon la tâche part, sans fenêtre, et son résultat arrive dans la boîte ;
+- chaque passage est noté dans `planificateur.log`.
+
+Les tâches Windows sont mises à jour à l'ouverture et à chaque modification des tâches (exécutable
+déplacé compris) ; décocher la case, ou supprimer la tâche, retire la tâche Windows. Fichiers modifiés
+et branches distantes demandent Patronus ouvert.
 
 ## Compilation
 
@@ -126,7 +142,9 @@ enregistre une capture de la fenêtre après 3 s (`PATRONUS_CAPTURE_DELAI`, en s
 |---|---|
 | `taches\<id>.json` | une tâche (format : `docs/spec.md` §8) ; une tâche supprimée devient `<id>.json.supprimee` |
 | `executions\<id>\run.json` | une entrée de la boîte ; `journal.txt` à côté |
-| `planning.json` | dernière surveillance des échéances (pour signaler les manquées) |
+| `planning.json` | dernière surveillance des échéances (pour signaler les manquées), dernier commit vu des branches distantes |
+| `planificateur.log` | passages du Planificateur de Windows (fenêtre fermée) |
+| `verrous\`, `worktrees\` | verrou de chaque tâche en cours ; worktrees des sessions Claude |
 | `state.json` | réglages (thème, raccourcis, rétention), versionnés |
 
 Le script reçoit `PATRONUS_TACHE`, `PATRONUS_DECLENCHEUR`, `PATRONUS_FICHIERS` (fichiers modifiés, un

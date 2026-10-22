@@ -34,9 +34,11 @@ enum Cli {
     Window,
     /// `lancer <tâche>` : exécute la tâche sans fenêtre et attend sa fin.
     Run(String),
+    /// `planifie <tâche>` : lancé par le Planificateur de Windows à une échéance.
+    Planned(String),
 }
 
-/// `patronus [--donnees <dossier>] [lancer <tâche>]`.
+/// `patronus [--donnees <dossier>] [lancer <tâche> | planifie <tâche>]`.
 fn parse(args: &[String]) -> Result<(Option<PathBuf>, Cli), String> {
     let mut data_dir = None;
     let mut rest = Vec::new();
@@ -50,6 +52,7 @@ fn parse(args: &[String]) -> Result<(Option<PathBuf>, Cli), String> {
     let cli = match rest.as_slice() {
         [] => Cli::Window,
         ["lancer", id] => Cli::Run(id.to_string()),
+        ["planifie", id] => Cli::Planned(id.to_string()),
         _ => return Err(format!("arguments inconnus : {}", rest.join(" "))),
     };
     Ok((data_dir, cli))
@@ -84,6 +87,70 @@ fn run_cli(data_dir: &Path, task_id: &str) -> ExitCode {
     if run.statut.is_ok() { ExitCode::SUCCESS } else { ExitCode::FAILURE }
 }
 
+/// La fenêtre de Patronus tourne-t-elle sur ce dossier de données ? (son verrou d'instance existe)
+fn window_running(data_dir: &Path) -> bool {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE};
+    let name = wide(&instance_name(data_dir));
+    unsafe {
+        let h = OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, 0, name.as_ptr());
+        if h.is_null() {
+            return false;
+        }
+        CloseHandle(h);
+        true
+    }
+}
+
+/// Une ligne dans `planificateur.log` : ce que chaque passage du Planificateur a décidé, même quand
+/// il n'y avait rien à faire. Le fichier est ramené à sa seconde moitié au-delà de 256 Ko.
+fn planner_log(data_dir: &Path, task_id: &str, text: &str) {
+    use std::io::Write;
+    let path = data_dir.join("planificateur.log");
+    if let Ok(meta) = std::fs::metadata(&path)
+        && meta.len() > 256 * 1024
+        && let Ok(old) = std::fs::read_to_string(&path)
+    {
+        let half = old.len() / 2;
+        let cut = old[half..].find('\n').map_or(half, |i| half + i + 1);
+        let _ = std::fs::write(&path, &old[cut..]);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "{} {task_id} : {text}", patronus_core::run::now().format("%Y-%m-%d %H:%M:%S"));
+    }
+}
+
+/// `patronus planifie <tâche>`, lancé par le Planificateur de Windows à une échéance : rien à faire si
+/// la fenêtre est ouverte (elle tient ses échéances) ou si l'échéance a déjà été tenue ; sinon la
+/// tâche part, sans fenêtre, et son résultat arrive dans la boîte.
+fn run_planned(data_dir: &Path, task_id: &str) -> ExitCode {
+    use patronus_core::{engine::Engine, exec::Context, run::now};
+    if window_running(data_dir) {
+        planner_log(data_dir, task_id, "fenêtre ouverte : elle tient elle-même ses échéances");
+        return ExitCode::SUCCESS;
+    }
+    let mut engine = Engine::open_headless(data_dir, now());
+    let at = match engine.planned_run(task_id, now()) {
+        Ok(at) => at,
+        Err(why) => {
+            planner_log(data_dir, task_id, &format!("rien à faire ({why})"));
+            return ExitCode::SUCCESS;
+        }
+    };
+    let trigger = format!("Planificateur de Windows (échéance de {})", at.format("%H:%M"));
+    if let Err(why) = engine.try_launch(task_id, Context { trigger, ..Default::default() }, now()) {
+        planner_log(data_dir, task_id, &format!("non lancée : {why}"));
+        return ExitCode::from(3);
+    }
+    while engine.is_running(task_id) {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        engine.tick(now());
+    }
+    let statut = engine.runs.iter().find(|r| r.tache == task_id).map(|r| r.statut);
+    planner_log(data_dir, task_id, &format!("exécutée : {}", statut.map_or("?", |s| s.label())));
+    if statut.is_some_and(|s| s.is_ok()) { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let console = !args.is_empty();
@@ -105,6 +172,7 @@ fn main() -> ExitCode {
     let data_dir = dir.unwrap_or_else(patronus_core::fsutil::data_dir);
     match cli {
         Cli::Run(id) => run_cli(&data_dir, &id),
+        Cli::Planned(id) => run_planned(&data_dir, &id),
         Cli::Window => match gui(data_dir) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
@@ -151,5 +219,6 @@ mod tests {
         assert!(parse(&args(&["--donnees"])).is_err());
         assert!(parse(&args(&["lancer"])).is_err());
         assert!(parse(&args(&["inconnu"])).is_err());
+        assert_eq!(parse(&args(&["planifie", "matin"])), Ok((None, Cli::Planned("matin".into()))));
     }
 }

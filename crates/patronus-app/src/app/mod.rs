@@ -104,6 +104,10 @@ pub struct App {
     confirm: Option<Act>,
     /// Exécution choisie pendant qu'elle tournait : marquée lue à sa fin si elle est toujours affichée.
     read_when_done: Option<String>,
+    /// Synchronisation du Planificateur de Windows : faite (version des tâches), et ses problèmes.
+    windows_tasks: Option<(u64, Receiver<Vec<String>>)>,
+    /// Essais : ni Planificateur ni registre.
+    quiet: bool,
 }
 
 impl App {
@@ -174,6 +178,8 @@ impl App {
             title: String::new(),
             confirm: None,
             read_when_done: None,
+            windows_tasks: None,
+            quiet,
         };
         // Essais : la vue à montrer dans la capture.
         match std::env::var("PATRONUS_CAPTURE_VUE").as_deref() {
@@ -463,6 +469,35 @@ impl App {
         });
     }
 
+    /// Met le Planificateur de Windows en accord avec les tâches (`hors_application`), dans un fil
+    /// (`schtasks` prend du temps) : à l'ouverture et après chaque relecture des tâches.
+    fn sync_windows_tasks(&mut self, e: &mut Engine) {
+        if self.quiet {
+            return;
+        }
+        if let Some((_, rx)) = &self.windows_tasks
+            && let Ok(problems) = rx.try_recv()
+        {
+            for p in problems {
+                e.problem(p);
+            }
+        }
+        if self.windows_tasks.as_ref().is_some_and(|(v, _)| *v == e.tasks_version) {
+            return;
+        }
+        let tasks: Vec<(String, Task)> =
+            e.loaded.iter().filter_map(|l| l.task.as_ref().ok().map(|t| (l.id.clone(), t.clone()))).collect();
+        let data_dir = self.data_dir.clone();
+        let (tx, rx) = channel();
+        self.windows_tasks = Some((e.tasks_version, rx));
+        std::thread::spawn(move || {
+            use patronus_core::winsched;
+            let folder = winsched::folder(&data_dir, &patronus_core::fsutil::default_data_dir());
+            let wanted = winsched::wanted_set(&tasks, &winsched::current_exe(), &data_dir, now().date());
+            let _ = tx.send(winsched::sync(&folder, &wanted, &data_dir.join("planificateur")));
+        });
+    }
+
     /// Confirmation avant d'abandonner les modifications de l'éditeur.
     fn confirm_window(&mut self, ctx: &egui::Context, e: &mut Engine) {
         if self.confirm.is_none() {
@@ -581,6 +616,7 @@ impl eframe::App for App {
         for act in std::mem::take(&mut self.acts) {
             self.apply(act, &mut e);
         }
+        self.sync_windows_tasks(&mut e);
         let running = e.running_count();
         drop(e);
         self.capture(&ctx);
