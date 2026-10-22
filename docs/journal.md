@@ -228,3 +228,18 @@ un avant correction.
   résultat est reporté ensuite (fenêtre « en cours » côté interface ; fermer pendant ce temps demande
   confirmation). « Reprendre la session » ouvre le dossier où la session a tourné ; si c'était un
   worktree supprimé, elle est refusée avec la raison (Claude Code range ses sessions par dossier).
+- **B2, dernier commit vu** : sa clé était `<tâche>#<n° du déclencheur>` ; changer la branche, le
+  distant ou le dépôt faisait comparer le commit de la nouvelle branche à celui de l'ancienne, et la
+  tâche partait (une session payée sur une simple modification). La clé réunit maintenant tâche,
+  déclencheur, dépôt, distant et branche ; un relevé revenu pour un déclencheur modifié est ignoré ;
+  les branches qui ne sont plus surveillées (déclencheur retiré, tâche en pause ou supprimée) sont
+  oubliées, avec leurs problèmes, et repartent d'un premier relevé, sans lancer la tâche. Une erreur
+  de relevé remplace la précédente au lieu de s'y ajouter.
+- **C6, pause générale (corrige l'entrée ci-dessus)** : aucun relevé de branche n'avait lieu en
+  pause, si bien que les commits arrivés pendant la pause lançaient la tâche à la reprise, alors que
+  les fichiers modifiés pendant la pause étaient oubliés. Désormais les deux sont oubliés : à la
+  reprise, les branches repartent d'un premier relevé.
+- **C3, sessions en cours** : le plafond mensuel ne comptait que les sessions finies ; deux sessions
+  dues à la même heure passaient toutes deux. Les sessions en cours comptent maintenant pour leur
+  budget (celles d'un autre processus aussi, d'après la boîte relue toutes les 5 s). Une ligne du
+  registre des coûts part en une seule écriture.

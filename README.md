@@ -182,7 +182,7 @@ enregistre une capture de la fenêtre après 3 s (`PATRONUS_CAPTURE_DELAI`, en s
 |---|---|
 | `taches\<id>.json` | une tâche (format : `docs/spec.md` §8) ; une tâche supprimée devient `<id>.json.supprimee` |
 | `executions\<id>\run.json` | une entrée de la boîte ; `journal.txt` à côté |
-| `planning.json` | dernière surveillance des échéances (pour signaler les manquées), dernier commit vu des branches distantes |
+| `planning.json` | dernière surveillance des échéances (pour signaler les manquées), dernier commit vu des branches distantes, pause générale, budget mensuel |
 | `planificateur.log` | passages du Planificateur de Windows (fenêtre fermée) |
 | `couts\<année-mois>.txt` | coût de chaque session Claude du mois (budget mensuel) |
 | `verrous\`, `worktrees\` | verrou de chaque tâche en cours ; worktrees des sessions Claude |

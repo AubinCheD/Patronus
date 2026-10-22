@@ -97,6 +97,17 @@ impl Drop for Ticker {
     }
 }
 
+/// Une branche distante surveillée. La clé réunit la tâche, le n° du déclencheur, le dépôt, le
+/// distant et la branche : changer l'un d'eux repart d'un premier relevé, sans lancer la tâche.
+struct BranchWatch {
+    key: String,
+    task_id: String,
+    repo: PathBuf,
+    remote: String,
+    branch: String,
+    every: Duration,
+}
+
 /// Ce que le fil de maintenance a fait (git), à reprendre sous le verrou du moteur.
 enum Upkeep {
     Problem(String),
@@ -296,6 +307,7 @@ impl Engine {
             }
         }
         self.update_watcher();
+        self.forget_unwatched_branches();
     }
 
     /// Surveille les dossiers des déclencheurs « fichiers » qui existent ; rappelé régulièrement, pour
@@ -746,11 +758,13 @@ impl Engine {
         use std::io::Write;
         let path = self.cost_ledger(&at.format("%Y-%m").to_string());
         let _ = std::fs::create_dir_all(path.parent().unwrap_or(&self.data_dir));
+        // Une seule écriture en ajout : deux processus n'entremêlent pas leurs lignes.
+        let line = format!("{run_id}\t{usd}\n");
         let written = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path)
-            .and_then(|mut f| writeln!(f, "{run_id}\t{usd}"));
+            .and_then(|mut f| f.write_all(line.as_bytes()));
         if let Err(e) = written {
             self.problem(format!("Coût non enregistré ({}) : {e}", path.display()));
         }
@@ -776,6 +790,12 @@ impl Engine {
     pub fn set_paused(&mut self, on: bool, now: NaiveDateTime) {
         self.planning.en_pause = on;
         self.planning.derniere_verification = Some(now);
+        if !on {
+            // Comme les fichiers modifiés, les commits arrivés pendant la pause ne lancent rien : les
+            // branches repartent d'un premier relevé.
+            self.planning.branches.clear();
+            self.branch_next.clear();
+        }
         self.save_planning();
         if !on {
             // Une échéance passée pendant la pause (ordinateur en veille) n'est pas à tenir en retard.
@@ -804,11 +824,23 @@ impl Engine {
     fn monthly_budget_check(&self, task: &Task, now: NaiveDateTime) -> Result<(), String> {
         let (Some(limit), Some(c)) = (self.planning.budget_mensuel_usd, &task.action.claude) else { return Ok(()) };
         let spent = self.month_cost(now);
+        // Les sessions en cours (ici, ou ailleurs d'après la boîte relue) peuvent encore coûter leur budget.
+        let running: f64 = self
+            .runs
+            .iter()
+            .filter(|r| r.statut == Status::EnCours)
+            .filter_map(|r| self.task(&r.tache)?.action.claude.as_ref()?.budget_usd)
+            .sum();
         let this = c.budget_usd.unwrap_or(0.0);
-        if spent + this > limit {
+        if spent + running + this > limit {
+            let running = if running > 0.0 {
+                format!(", {running:.2} $ engagés par les sessions en cours")
+            } else {
+                String::new()
+            };
             return Err(format!(
-                "Budget mensuel atteint : {spent:.2} $ dépensés ce mois sur {limit:.2} $, et cette session peut coûter \
-                 jusqu'à {this:.2} $ (équivalent API)."
+                "Budget mensuel atteint : {spent:.2} $ dépensés ce mois sur {limit:.2} ${running}, et cette session \
+                 peut coûter jusqu'à {this:.2} $ (équivalent API)."
             ));
         }
         Ok(())
@@ -907,11 +939,19 @@ impl Engine {
     /// sont revenus. Rend vrai si une tâche est partie.
     fn poll_branches(&mut self, now: NaiveDateTime) -> bool {
         let mut changed = false;
+        let watches = self.branch_watches();
         while let Ok((key, task_id, label, poll)) = self.branch_rx.try_recv() {
             self.branch_busy.remove(&key);
+            // Déclencheur modifié ou retiré pendant le relevé : son résultat ne vaut plus rien.
+            if !watches.iter().any(|w| w.key == key) {
+                continue;
+            }
             let prefix = format!("Tâche {task_id} : branche distante {label}");
             match poll {
-                Poll::Failed(e) => self.problem(format!("{prefix} illisible : {e}")),
+                Poll::Failed(e) => {
+                    self.problems.retain(|p| !p.starts_with(&prefix));
+                    self.problem(format!("{prefix} illisible : {e}"));
+                }
                 Poll::Same => self.problems.retain(|p| !p.starts_with(&prefix)),
                 Poll::First(sha) => {
                     self.problems.retain(|p| !p.starts_with(&prefix));
@@ -948,31 +988,59 @@ impl Engine {
             return changed;
         }
         let due = Instant::now();
-        let mut polls = Vec::new();
+        for w in watches {
+            if self.branch_busy.contains(&w.key) || self.branch_next.get(&w.key).is_some_and(|t| *t > due) {
+                continue;
+            }
+            self.branch_next.insert(w.key.clone(), due + w.every);
+            self.branch_busy.insert(w.key.clone());
+            let known = self.planning.branches.get(&w.key).cloned();
+            let tx = self.branch_tx.clone();
+            std::thread::spawn(move || {
+                let poll = crate::remote::poll(&w.repo, &w.remote, &w.branch, known.as_deref());
+                let _ = tx.send((w.key, w.task_id, format!("{}/{}", w.remote, w.branch), poll));
+            });
+        }
+        changed
+    }
+
+    /// Les branches distantes surveillées : celles des tâches actives et valides qui ont un dépôt.
+    fn branch_watches(&self) -> Vec<BranchWatch> {
+        let mut out = Vec::new();
         for l in self.loaded.iter().filter(|l| l.problems.is_empty()) {
             let Ok(task) = &l.task else { continue };
             let Some(repo) = task.depot.clone().filter(|_| task.active) else { continue };
             for (i, tr) in task.declencheurs.iter().enumerate() {
                 let Trigger::Branche { branche_distante: b } = tr else { continue };
-                let key = format!("{}#{i}", l.id);
-                if self.branch_busy.contains(&key) || self.branch_next.get(&key).is_some_and(|t| *t > due) {
-                    continue;
-                }
-                let every = Duration::from_secs(b.toutes_les_minutes.max(1) as u64 * 60);
-                polls.push((key, l.id.clone(), repo.clone(), b.distant.clone(), b.branche.clone(), every));
+                out.push(BranchWatch {
+                    key: format!("{}#{i} {} {}/{}", l.id, repo.display(), b.distant, b.branche),
+                    task_id: l.id.clone(),
+                    repo: repo.clone(),
+                    remote: b.distant.clone(),
+                    branch: b.branche.clone(),
+                    every: Duration::from_secs(b.toutes_les_minutes.max(1) as u64 * 60),
+                });
             }
         }
-        for (key, task_id, repo, remote, branch, every) in polls {
-            self.branch_next.insert(key.clone(), due + every);
-            self.branch_busy.insert(key.clone());
-            let known = self.planning.branches.get(&key).cloned();
-            let tx = self.branch_tx.clone();
-            std::thread::spawn(move || {
-                let poll = crate::remote::poll(&repo, &remote, &branch, known.as_deref());
-                let _ = tx.send((key, task_id, format!("{remote}/{branch}"), poll));
-            });
+        out
+    }
+
+    /// Oublie le dernier commit vu des branches qui ne sont plus surveillées (déclencheur modifié ou
+    /// retiré, tâche mise en pause ou supprimée) : surveillées de nouveau, elles repartent d'un premier
+    /// relevé, sans lancer la tâche. Leurs problèmes s'effacent.
+    fn forget_unwatched_branches(&mut self) {
+        let watches = self.branch_watches();
+        let before = self.planning.branches.len();
+        self.planning.branches.retain(|k, _| watches.iter().any(|w| &w.key == k));
+        self.branch_next.retain(|k, _| watches.iter().any(|w| &w.key == k));
+        let prefixes: Vec<String> = watches
+            .iter()
+            .map(|w| format!("Tâche {} : branche distante {}/{}", w.task_id, w.remote, w.branch))
+            .collect();
+        self.problems.retain(|p| !p.contains(" : branche distante ") || prefixes.iter().any(|x| p.starts_with(x)));
+        if self.planning.branches.len() != before && !self.headless {
+            self.save_planning();
         }
-        changed
     }
 
     /// Change la rétention ; elle s'applique au prochain tour.
@@ -1935,6 +2003,25 @@ mod tests {
         e.launch(&id, by_hand(), now);
         wait_idle(&mut e, now);
         assert_eq!(e.runs[0].statut, Status::Reussie);
+    }
+
+    /// Deux sessions dues ensemble : la seconde compte le budget de la première, encore en cours.
+    #[test]
+    fn running_sessions_count_in_the_monthly_budget() {
+        let dir = test_dir("engine-budget-en-cours");
+        let now = at(21, 8, 0);
+        let (exec, _) = fake(Duration::from_secs(20));
+        let mut e = Engine::open_with(&dir, now, Some(exec), Duration::from_millis(200));
+        let a = e.save_task(Some("a"), &claude_task(0.6), now).unwrap();
+        let b = e.save_task(Some("b"), &claude_task(0.6), now).unwrap();
+        e.set_monthly_budget(Some(1.0));
+        e.launch(&a, by_hand(), now);
+        assert!(e.is_running(&a));
+        e.launch(&b, by_hand(), now);
+        let refused = e.runs.iter().find(|r| r.tache == b).unwrap();
+        assert_eq!(refused.statut, Status::Impossible);
+        assert!(refused.resume.contains("0.60 $ engagés par les sessions en cours"), "{}", refused.resume);
+        e.shutdown(now, Duration::from_secs(5));
     }
 
     /// Fermer Patronus coupe les exécutions : « interrompue », pas « arrêtée » (sauf celle qu'on

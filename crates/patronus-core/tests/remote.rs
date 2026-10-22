@@ -100,10 +100,17 @@ fn poll(e: &mut Engine, mut done: impl FnMut(&Engine) -> bool) {
     panic!("relevé non revenu ; problèmes : {:?}", e.problems);
 }
 
-fn known(data: &Path) -> Option<String> {
+/// Dernier commit vu de la branche `branch` du premier déclencheur de la tâche `doc`.
+fn known_of(data: &Path, branch: &str) -> Option<String> {
     let text = std::fs::read_to_string(data.join("planning.json")).ok()?;
     let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    v["branches"]["doc#0"].as_str().map(str::to_string)
+    let branches = v["branches"].as_object()?;
+    let (_, sha) = branches.iter().find(|(k, _)| k.starts_with("doc#0 ") && k.ends_with(&format!("/{branch}")))?;
+    sha.as_str().map(str::to_string)
+}
+
+fn known(data: &Path) -> Option<String> {
+    known_of(data, "main")
 }
 
 #[test]
@@ -174,4 +181,53 @@ fn unknown_remote_is_reported_once() {
     }
     assert_eq!(e.problems.iter().filter(|p| p.contains("branche distante")).count(), 1, "{:?}", e.problems);
     assert!(seen.lock().unwrap().is_empty());
+}
+
+/// Changer la branche surveillée ne fait pas partir la tâche : la nouvelle branche repart d'un
+/// premier relevé (avant, son commit était comparé au dernier vu de l'ancienne branche).
+#[test]
+fn changing_the_branch_does_not_trigger() {
+    let dir = temp("autre-branche");
+    let (remote, depot) = repos(&dir);
+    git(&remote, &["checkout", "-q", "-b", "develop"]);
+    let develop = commit(&remote, "develop.md", "Travail en cours");
+    git(&remote, &["checkout", "-q", "main"]);
+    let data = dir.join("donnees");
+    let (exec, seen) = recorder();
+    let mut e = engine(&data, exec);
+    let mut t = branch_task(&depot, "origin");
+    e.save_task(Some("doc"), &t, now()).unwrap();
+    poll(&mut e, |_| known(&data).is_some());
+    let Trigger::Branche { branche_distante: b } = &mut t.declencheurs[0] else { unreachable!() };
+    b.branche = "develop".into();
+    e.save_task(Some("doc"), &t, now()).unwrap();
+    poll(&mut e, |_| known_of(&data, "develop").is_some());
+    assert_eq!(known_of(&data, "develop").as_deref(), Some(develop.as_str()));
+    assert_eq!(known(&data), None, "l'ancienne branche est oubliée");
+    std::thread::sleep(Duration::from_millis(200));
+    e.tick(now());
+    assert!(seen.lock().unwrap().is_empty(), "rien ne part sur une modification");
+}
+
+/// Comme les fichiers modifiés, un commit arrivé pendant la pause générale ne lance rien à la reprise.
+#[test]
+fn commits_during_pause_do_not_trigger() {
+    let dir = temp("pause");
+    let (remote, depot) = repos(&dir);
+    let data = dir.join("donnees");
+    let (exec, seen) = recorder();
+    let mut e = engine(&data, exec);
+    e.save_task(Some("doc"), &branch_task(&depot, "origin"), now()).unwrap();
+    poll(&mut e, |_| known(&data).is_some());
+    e.set_paused(true, now());
+    let during = commit(&remote, "pause.md", "Commit pendant la pause");
+    e.set_paused(false, now());
+    poll(&mut e, |_| known(&data).as_deref() == Some(during.as_str()));
+    std::thread::sleep(Duration::from_millis(200));
+    e.tick(now());
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "{:?}",
+        seen.lock().unwrap().iter().map(|c| &c.trigger).collect::<Vec<_>>()
+    );
 }
