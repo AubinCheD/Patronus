@@ -39,7 +39,7 @@ fn claude(
     t.depot = depot;
     t.action.script = None;
     t.action.claude = Some(action);
-    t.action.worktree = branch.map(|b| Worktree::on(b));
+    t.action.worktree = branch.map(Worktree::on);
     t.declencheurs = triggers;
     t
 }

@@ -129,10 +129,14 @@ pub fn run_process_with(
         log(journal, "[patronus] le processus n'a pas pu être relancé après sa création");
     }
     let result = supervise(&mut child, job.as_ref(), journal, stop, max, check);
-    // La sortie est entièrement recopiée avant de rendre la main (2 s au plus : un processus resté
-    // hors de l'objet de tâche pourrait garder le tube ouvert).
+    // La sortie est entièrement recopiée avant de rendre la main. Les processus laissés en arrière-plan
+    // ont été arrêtés avec l'objet de tâche : les tubes se ferment aussitôt. L'attente n'est bornée que
+    // pour un processus resté hors de l'objet (objet de tâche impossible), qui garderait le tube ouvert ;
+    // elle est large, pour une machine chargée.
     for done in pumps {
-        let _ = done.recv_timeout(Duration::from_secs(2));
+        if done.recv_timeout(Duration::from_secs(10)).is_err() {
+            log(journal, "[patronus] sortie peut-être incomplète : un processus garde le tube ouvert");
+        }
     }
     result
 }
