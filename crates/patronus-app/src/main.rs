@@ -109,16 +109,21 @@ fn window_running(data_dir: &Path) -> bool {
 fn planner_log(data_dir: &Path, task_id: &str, text: &str) {
     use std::io::Write;
     let path = data_dir.join("planificateur.log");
-    if let Ok(meta) = std::fs::metadata(&path)
-        && meta.len() > 256 * 1024
-        && let Ok(old) = std::fs::read_to_string(&path)
-    {
-        let half = old.len() / 2;
-        let cut = old[half..].find('\n').map_or(half, |i| half + i + 1);
-        let _ = std::fs::write(&path, &old[cut..]);
-    }
+    trim_log(&path, 256 * 1024);
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
         let _ = writeln!(f, "{} {task_id} : {text}", patronus_core::run::now().format("%Y-%m-%d %H:%M:%S"));
+    }
+}
+
+/// Au-delà de `max` octets, ramène le journal à sa seconde moitié, à partir d'une ligne entière. En
+/// octets : une coupe au milieu d'un caractère accentué ne peut pas faire échouer `planifie`.
+fn trim_log(path: &Path, max: u64) {
+    if std::fs::metadata(path).is_ok_and(|m| m.len() > max)
+        && let Ok(old) = std::fs::read(path)
+    {
+        let half = old.len() / 2;
+        let cut = old[half..].iter().position(|&b| b == b'\n').map_or(old.len(), |i| half + i + 1);
+        let _ = std::fs::write(path, &old[cut..]);
     }
 }
 
@@ -201,6 +206,29 @@ mod tests {
 
     fn args(s: &[&str]) -> Vec<String> {
         s.iter().map(|a| a.to_string()).collect()
+    }
+
+    /// Un journal plein d'accents, coupé à chaque position possible : jamais de panique, toujours des
+    /// lignes entières (la coupe au milieu d'un « é » faisait échouer `planifie` pour de bon).
+    #[test]
+    fn planner_log_is_trimmed_on_whole_lines() {
+        let dir = std::env::temp_dir().join(format!("patronus-journal-planificateur-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("planificateur.log");
+        for shift in 0..8 {
+            let mut text = "x".repeat(shift);
+            while text.len() < 4096 {
+                text.push_str("2026-10-22 08:00:00 matin : fenêtre ouverte, échéance déjà tenue\n");
+            }
+            std::fs::write(&path, &text).unwrap();
+            trim_log(&path, 1024);
+            let kept = std::fs::read_to_string(&path).expect("UTF-8 valide");
+            assert!(kept.len() < text.len() / 2 + 100, "{shift} : ramené à moitié");
+            assert!(kept.starts_with("2026-10-22"), "{shift} : ligne entière");
+        }
+        planner_log(&dir, "matin", "exécutée : réussie");
+        assert!(std::fs::read_to_string(&path).unwrap().ends_with("matin : exécutée : réussie\n"));
     }
 
     #[test]
