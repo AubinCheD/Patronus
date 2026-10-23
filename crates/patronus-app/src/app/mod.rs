@@ -123,6 +123,8 @@ pub struct App {
     unread_only: bool,
     show_archived: bool,
     show_settings: bool,
+    /// Posé par l'hôte : les réglages s'ouvrent chez lui, sur la page de Patronus (voir `set_settings_link`).
+    settings_link: Option<Box<dyn Fn()>>,
     show_problems: bool,
     rebinding: Option<Command>,
     palette_open: bool,
@@ -171,6 +173,31 @@ impl App {
     /// suite). Faux par défaut : rien ne change pour l'exécutable autonome.
     pub fn set_hosted(&mut self, hosted: bool) {
         self.hosted = hosted;
+    }
+
+    /// Embarqué par un hôte qui montre les réglages de Patronus dans les siens : « Réglages » appelle `open` (la page
+    /// Patronus des réglages de l'hôte) au lieu d'ouvrir sa fenêtre.
+    pub fn set_settings_link(&mut self, open: Box<dyn Fn()>) {
+        self.settings_link = Some(open);
+    }
+
+    /// Ses réglages, dessinés dans un `Ui` de l'hôte (la page Patronus de ses réglages). Un raccourci en cours de
+    /// saisie y est pris : c'est cette page qui a le clavier.
+    pub fn settings_ui(&mut self, ui: &mut egui::Ui) {
+        let shared = self.engine.clone();
+        let mut e = lock(&shared);
+        let ctx = ui.ctx().clone();
+        if self.rebinding.is_some() {
+            self.capture_rebinding(&ctx, &mut e);
+        }
+        self.settings_contents(ui, &mut e);
+    }
+
+    fn toggle_settings(&mut self) {
+        match &self.settings_link {
+            Some(open) => open(),
+            None => self.show_settings = !self.show_settings,
+        }
     }
 
     pub fn new(cc: &eframe::CreationContext<'_>, data_dir: PathBuf, state: State, problems: Vec<String>) -> App {
@@ -232,6 +259,7 @@ impl App {
             unread_only: false,
             show_archived: false,
             show_settings: false,
+            settings_link: None,
             show_problems: false,
             rebinding: None,
             palette_open: false,
@@ -488,7 +516,7 @@ impl App {
                 self.palette_query.clear();
                 self.palette_index = 0;
             }
-            Command::Settings => self.show_settings = !self.show_settings,
+            Command::Settings => self.toggle_settings(),
             Command::NextUnread => {
                 let next = self
                     .visible_runs(e)
@@ -512,23 +540,29 @@ impl App {
         }
     }
 
-    fn handle_keys(&mut self, ctx: &egui::Context, e: &mut Engine) {
-        if let Some(cmd) = self.rebinding {
-            let pressed = ctx.input(|i| {
-                i.events.iter().find_map(|ev| match ev {
-                    egui::Event::Key { key, pressed: true, modifiers, .. } => Some((*key, *modifiers)),
-                    _ => None,
-                })
-            });
-            if let Some((key, mods)) = pressed {
-                if key == Key::Escape {
-                    self.rebinding = None;
-                } else {
-                    self.shortcuts.set(cmd, Some(Binding::new(mods, key)));
-                    self.rebinding = None;
-                    self.save_state(e);
-                }
+    /// La touche d'un raccourci en cours de saisie (Échap annule).
+    fn capture_rebinding(&mut self, ctx: &egui::Context, e: &mut Engine) {
+        let Some(cmd) = self.rebinding else { return };
+        let pressed = ctx.input(|i| {
+            i.events.iter().find_map(|ev| match ev {
+                egui::Event::Key { key, pressed: true, modifiers, .. } => Some((*key, *modifiers)),
+                _ => None,
+            })
+        });
+        if let Some((key, mods)) = pressed {
+            if key == Key::Escape {
+                self.rebinding = None;
+            } else {
+                self.shortcuts.set(cmd, Some(Binding::new(mods, key)));
+                self.rebinding = None;
+                self.save_state(e);
             }
+        }
+    }
+
+    fn handle_keys(&mut self, ctx: &egui::Context, e: &mut Engine) {
+        if self.rebinding.is_some() {
+            self.capture_rebinding(ctx, e);
             return;
         }
         let pressed: Vec<(Key, egui::Modifiers)> = ctx.input(|i| {
@@ -615,7 +649,7 @@ impl App {
                 self.palette_open = true;
             }
             if ui.button("Réglages").on_hover_text(self.shortcuts.text(Command::Settings)).clicked() {
-                self.show_settings = !self.show_settings;
+                self.toggle_settings();
             }
         });
     }
