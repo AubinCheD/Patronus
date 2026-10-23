@@ -193,6 +193,11 @@ impl App {
         self.settings_contents(ui, &mut e);
     }
 
+    /// Sa page chez l'hôte quittée (fenêtre fermée, autre page) : un raccourci en cours de saisie est abandonné.
+    pub fn settings_left(&mut self) {
+        self.rebinding = None;
+    }
+
     fn toggle_settings(&mut self) {
         match &self.settings_link {
             Some(open) => open(),
