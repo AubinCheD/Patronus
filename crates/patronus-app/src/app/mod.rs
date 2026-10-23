@@ -161,9 +161,18 @@ pub struct App {
     closing: bool,
     /// Dernier zoom vu : un changement (clavier, molette, réglages) est retenu dans l'état.
     zoom_seen: f32,
+    /// Embarqué par un hôte (voir `set_hosted`).
+    hosted: bool,
 }
 
 impl App {
+    /// Embarqué par un hôte (la suite) : la fenêtre n'est pas la sienne. Sa taille et sa position ne
+    /// sont pas enregistrées dans l'état (sinon, lancé seul ensuite, il s'ouvrirait à la taille de la
+    /// suite). Faux par défaut : rien ne change pour l'exécutable autonome.
+    pub fn set_hosted(&mut self, hosted: bool) {
+        self.hosted = hosted;
+    }
+
     pub fn new(cc: &eframe::CreationContext<'_>, data_dir: PathBuf, state: State, problems: Vec<String>) -> App {
         App::with(cc, Options { data_dir, state, problems, quiet: false })
     }
@@ -205,6 +214,7 @@ impl App {
             }
         });
         let mut app = App {
+            hosted: false,
             engine,
             ticker: Some(ticker),
             finished_rx,
@@ -960,7 +970,7 @@ impl eframe::App for App {
         drop(e);
         self.capture(&ctx);
         let size = ctx.input(|i| i.viewport().inner_rect.map(|r| r.size()));
-        if let Some(s) = size {
+        if let Some(s) = size.filter(|_| !self.hosted) {
             // En points de l'écran, hors zoom de l'interface : la fenêtre garde sa taille quel que soit le zoom.
             let zoom = ctx.zoom_factor();
             self.state.taille_fenetre = [s.x * zoom, s.y * zoom];
