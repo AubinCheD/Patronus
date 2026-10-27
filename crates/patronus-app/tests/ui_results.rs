@@ -80,6 +80,35 @@ fn worktree_is_dropped_after_confirmation() {
     });
 }
 
+/// Demandées par un hôte (le téléphone de la suite) : les mêmes actions que les boutons, montrées ici pendant
+/// qu'elles se font, annoncées à la fin, et suivies par `run_job`.
+#[test]
+fn result_actions_asked_by_the_host_run_like_the_buttons() {
+    use patronus_app::app::RunJob;
+    let dir = temp("hote-resultat");
+    let (repo, data) = finished_session(&dir);
+    let wt = data.join("worktrees").join("20261022-080000-doc");
+    let id = "20261022-080000-doc";
+    let mut h = app(&data);
+    h.state_mut().apply_diff(id).unwrap();
+    assert_eq!(h.state().run_job(id), Some(&RunJob::Running("Application du diff…".into())));
+    assert!(h.state_mut().drop_worktree(id).is_err(), "une action à la fois");
+    wait_until(&mut h, "diff appliqué et annoncé", |h| {
+        matches!(h.state().run_job(id), Some(RunJob::Done(Ok(t), _)) if t.starts_with("Diff appliqué : 1 fichier"))
+            && shows_containing(h, "Diff appliqué : 1 fichier(s)")
+    });
+    assert!(repo.join("GUIDE.md").exists());
+    assert_eq!(git(&repo, &["log", "--oneline"]).lines().count(), 1, "aucun commit");
+
+    h.state_mut().drop_worktree(id).unwrap();
+    wait_until(&mut h, "worktree supprimé", |h| {
+        matches!(h.state().run_job(id), Some(RunJob::Done(Ok(_), _))) && h.state().engine().runs[0].worktree.is_none()
+    });
+    assert!(!wt.exists());
+    h.state_mut().drop_worktree(id).unwrap();
+    wait_until(&mut h, "plus rien à supprimer", |h| matches!(h.state().run_job(id), Some(RunJob::Done(Err(_), _))));
+}
+
 #[test]
 fn links_are_shown() {
     let dir = temp("liens");

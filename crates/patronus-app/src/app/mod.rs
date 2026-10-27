@@ -12,6 +12,7 @@ mod tasks;
 mod widgets;
 
 use crate::icons;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, channel};
@@ -84,6 +85,16 @@ enum RunDialog {
     Busy(String),
 }
 
+/// Où en est l'action sur un résultat (appliquer le diff, supprimer le worktree) : un hôte (le téléphone de la
+/// suite) suit celles qu'il a demandées.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RunJob {
+    /// Ce qui se fait (« Application du diff… »).
+    Running(String),
+    /// Ce qui a été annoncé, ou pourquoi c'est impossible.
+    Done(Result<String, String>, Instant),
+}
+
 /// Fin d'une action sur un résultat menée dans un fil (git), à reporter dans le moteur.
 enum JobDone {
     Plan(String, Result<patronus_core::actions::ApplyPlan, String>),
@@ -144,6 +155,8 @@ pub struct App {
     run_dialog: Option<RunDialog>,
     /// Actions sur un résultat menées dans un fil : leurs fins.
     jobs: (std::sync::mpsc::Sender<JobDone>, Receiver<JobDone>),
+    /// Par exécution : l'action sur son résultat en cours, ou ce qu'a donné la dernière (voir `run_job`).
+    run_jobs: HashMap<String, RunJob>,
     /// Pour réveiller l'interface depuis un fil.
     ctx: egui::Context,
     /// Exécution choisie pendant qu'elle tournait : marquée lue à sa fin si elle est toujours affichée.
@@ -278,6 +291,7 @@ impl App {
             confirm: None,
             run_dialog: None,
             jobs: channel(),
+            run_jobs: HashMap::new(),
             ctx: cc.egui_ctx.clone(),
             read_when_done: None,
             windows_tasks: None,
@@ -439,7 +453,7 @@ impl App {
                 Err(why) => self.run_dialog = Some(RunDialog::Apply(id, Err(why))),
             },
             Act::ApplyDiff(id) => match e.diff_job(&id) {
-                Ok((repo, patch)) => self.background("Application du diff…", move || {
+                Ok((repo, patch)) => self.background_for(id.clone(), "Application du diff…", move || {
                     let done = patronus_core::actions::check_apply(&repo, &patch)
                         .and_then(|plan| patronus_core::actions::apply(&repo, &patch).map(|_| plan));
                     JobDone::Applied(id, done)
@@ -448,7 +462,7 @@ impl App {
             },
             Act::AskDropWorktree(id) => self.run_dialog = Some(RunDialog::DropWorktree(id)),
             Act::DropWorktree(id) => match e.worktree_job(&id) {
-                Ok((wt, repo)) => self.background("Suppression du worktree…", move || {
+                Ok((wt, repo)) => self.background_for(id.clone(), "Suppression du worktree…", move || {
                     JobDone::Dropped(id, patronus_core::claude::discard_worktree(&wt, repo.as_deref()))
                 }),
                 Err(why) => self.job_done(JobDone::Dropped(id, Err(why)), e),
@@ -476,34 +490,79 @@ impl App {
         });
     }
 
+    /// `background` pour une action sur le résultat `id` : suivie jusqu'à sa fin (`run_job`).
+    fn background_for(&mut self, id: String, busy: &str, work: impl FnOnce() -> JobDone + Send + 'static) {
+        self.run_jobs.insert(id, RunJob::Running(busy.to_string()));
+        self.background(busy, work);
+    }
+
     /// Fin d'une action menée dans un fil : reportée dans le moteur et dite.
     fn job_done(&mut self, done: JobDone, e: &mut Engine) {
-        match done {
-            JobDone::Plan(id, plan) => self.run_dialog = Some(RunDialog::Apply(id, plan)),
+        let (id, said) = match done {
+            JobDone::Plan(id, plan) => {
+                self.run_dialog = Some(RunDialog::Apply(id, plan));
+                return;
+            }
             JobDone::Applied(id, done) => {
                 self.run_dialog = None;
-                match done {
+                let said = match done {
                     Ok(plan) => {
                         e.mark_diff_applied(&id, now());
-                        self.toast(
-                            format!("Diff appliqué : {} fichier(s), sans commit.", plan.files.len()),
-                            self.palette.ok,
-                        );
+                        Ok(format!("Diff appliqué : {} fichier(s), sans commit.", plan.files.len()))
                     }
-                    Err(err) => self.toast(format!("Diff non appliqué : {err}"), self.palette.danger),
-                }
+                    Err(err) => Err(format!("Diff non appliqué : {err}")),
+                };
+                (id, said)
             }
             JobDone::Dropped(id, done) => {
                 self.run_dialog = None;
-                match done {
+                let said = match done {
                     Ok(()) => {
                         e.forget_worktree(&id);
-                        self.toast("Worktree supprimé ; le diff reste dans le résultat.", self.palette.ok);
+                        Ok("Worktree supprimé ; le diff reste dans le résultat.".to_string())
                     }
-                    Err(err) => self.toast(format!("Worktree non supprimé : {err}"), self.palette.danger),
-                }
+                    Err(err) => Err(format!("Worktree non supprimé : {err}")),
+                };
+                (id, said)
             }
+        };
+        match &said {
+            Ok(text) => self.toast(text.clone(), self.palette.ok),
+            Err(text) => self.toast(text.clone(), self.palette.danger),
         }
+        self.run_jobs.insert(id, RunJob::Done(said, Instant::now()));
+    }
+
+    // --- Pour la suite (le téléphone) : les mêmes actions que les boutons d'un résultat, une fois confirmées ---
+
+    /// Applique le diff de l'exécution `id` comme son bouton : vérifié puis appliqué dans un fil, « Application du
+    /// diff… » affiché ici jusqu'à la fin, le résultat annoncé ici et suivi par `run_job`.
+    pub fn apply_diff(&mut self, id: &str) -> Result<(), String> {
+        self.ask_run_job(id, "Application du diff…", Act::ApplyDiff(id.to_string()))
+    }
+
+    /// Supprime le worktree gardé de l'exécution `id` comme son bouton (le diff reste dans le résultat).
+    pub fn drop_worktree(&mut self, id: &str) -> Result<(), String> {
+        self.ask_run_job(id, "Suppression du worktree…", Act::DropWorktree(id.to_string()))
+    }
+
+    /// L'action en cours sur le résultat `id`, ou ce qu'a donné la dernière.
+    pub fn run_job(&self, id: &str) -> Option<&RunJob> {
+        self.run_jobs.get(id)
+    }
+
+    /// Une action sur un résultat, faite à la prochaine image comme un clic ; suivie dès maintenant.
+    fn ask_run_job(&mut self, id: &str, busy: &str, act: Act) -> Result<(), String> {
+        if matches!(self.run_jobs.get(id), Some(RunJob::Running(_))) {
+            return Err("Une action est déjà en cours sur cette exécution.".into());
+        }
+        if matches!(self.run_dialog, Some(RunDialog::Busy(_))) {
+            return Err("Patronus mène déjà une action git : réessayez à sa fin.".into());
+        }
+        self.run_jobs.insert(id.to_string(), RunJob::Running(busy.to_string()));
+        self.acts.push(act);
+        self.ctx.request_repaint();
+        Ok(())
     }
 
     fn command(&mut self, c: Command, e: &mut Engine) {
