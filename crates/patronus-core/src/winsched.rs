@@ -229,9 +229,21 @@ pub fn remove_folder(folder: &str) -> Result<(), String> {
 }
 
 /// Met le Planificateur en accord avec les tâches : crée ou remplace celles qui doivent exister,
-/// supprime les autres de son dossier. Rend ce qui a échoué, en français.
+/// supprime les autres de son dossier. Rend ce qui a échoué, en français. Si d'autres comptes du
+/// poste peuvent modifier l'exécutable ou son dossier, aucune tâche ne le lance : elles ne sont pas
+/// créées, et celles qui existent sont retirées.
 pub fn sync(folder: &str, wanted: &[(String, String)], scratch: &Path) -> Vec<String> {
     let mut problems = Vec::new();
+    let wanted = match wanted.is_empty() {
+        true => wanted,
+        false => match crate::exeplace::check(&current_exe()) {
+            Ok(()) => wanted,
+            Err(e) => {
+                problems.push(format!("Tâches Windows non créées : {e}"));
+                &[]
+            }
+        },
+    };
     let existing = match list(folder) {
         Ok(ids) => ids,
         Err(e) => {

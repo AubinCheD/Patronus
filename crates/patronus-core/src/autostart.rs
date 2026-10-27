@@ -51,7 +51,13 @@ pub fn status(data_dir: &Path) -> Status {
     status_in(&Place::real(data_dir), &command_for(&current_exe(), data_dir))
 }
 
+/// Inscrit (ou retire) le démarrage avec Windows. Refusé si d'autres comptes du poste peuvent
+/// modifier l'exécutable ou son dossier : ce qu'ils y déposeraient se lancerait à chaque ouverture
+/// de session.
 pub fn set(data_dir: &Path, on: bool) -> Result<(), String> {
+    if on {
+        crate::exeplace::check(&current_exe())?;
+    }
     set_in(&Place::real(data_dir), on, &command_for(&current_exe(), data_dir))
 }
 

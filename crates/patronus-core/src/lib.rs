@@ -6,6 +6,7 @@ pub mod autostart;
 pub mod claude;
 pub mod engine;
 pub mod exec;
+pub mod exeplace;
 pub mod fsutil;
 pub mod lock;
 pub mod pricing;
