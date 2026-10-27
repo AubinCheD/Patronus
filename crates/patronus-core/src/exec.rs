@@ -301,6 +301,17 @@ fn capped_text(text: &str, max: usize) -> String {
     }
 }
 
+/// `PATRONUS_DECLENCHEUR` : le déclencheur, sans nom de fichier (le texte affiché en contient un). Un
+/// script cmd qui lirait `%PATRONUS_DECLENCHEUR%` exécuterait un `&` ou un `|` du nom ; les fichiers
+/// sont dans `PATRONUS_FICHIERS` et `PATRONUS_FICHIERS_LISTE`.
+fn trigger_for_env(ctx: &Context) -> String {
+    match ctx.files.len() {
+        0 => ctx.trigger.clone(),
+        1 => "1 fichier modifié".into(),
+        n => format!("{n} fichiers modifiés"),
+    }
+}
+
 /// Les `max` premiers fichiers, un par ligne, puis « … et N autres » s'il y en a plus.
 pub fn capped_list(files: &[PathBuf], max: usize) -> String {
     let mut lines: Vec<String> = files.iter().take(max).map(|f| f.display().to_string()).collect();
@@ -396,7 +407,7 @@ pub fn run_script(task_id: &str, task: &Task, ctx: &Context, journal: &Path, sto
     }
     let mut cmd = shell_command(script);
     cmd.current_dir(&dir).envs(&script.env);
-    cmd.env("PATRONUS_TACHE", task_id).env("PATRONUS_DECLENCHEUR", &ctx.trigger);
+    cmd.env("PATRONUS_TACHE", task_id).env("PATRONUS_DECLENCHEUR", trigger_for_env(ctx));
     cmd.envs(ctx.vars.iter().map(|(k, v)| (k, v)));
     for line in ctx.notes.lines() {
         log(journal, &format!("[patronus] {line}"));
@@ -452,6 +463,20 @@ pub fn run_script(task_id: &str, task: &Task, ctx: &Context, journal: &Path, sto
 mod tests {
     use super::*;
     use crate::fsutil::test_dir;
+
+    /// Le nom d'un fichier modifié (qu'un autre a pu choisir, `a&calc&.md`) n'entre pas dans
+    /// `PATRONUS_DECLENCHEUR`.
+    #[test]
+    fn the_trigger_variable_names_no_file() {
+        let one = Context {
+            trigger: "fichier modifié : a&calc&.md".into(),
+            files: vec![PathBuf::from(r"C:\x\a&calc&.md")],
+            ..Default::default()
+        };
+        assert_eq!(trigger_for_env(&one), "1 fichier modifié");
+        let timer = Context { trigger: "chaque jour à 9 h".into(), ..Default::default() };
+        assert_eq!(trigger_for_env(&timer), "chaque jour à 9 h");
+    }
 
     fn script_task(shell: Shell, commande: &str, dir: &Path) -> Task {
         let mut t = Task::new_script("Essai");

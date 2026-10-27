@@ -363,6 +363,18 @@ impl Task {
                     .into(),
             );
         }
+        if let Some(s) = &self.action.script
+            && s.shell == Shell::Cmd
+            && s.commande.to_ascii_uppercase().contains("%PATRONUS_FICHIERS%")
+        {
+            out.push(
+                "%PATRONUS_FICHIERS% dans cmd : un nom de fichier qui contient &, | ou > y serait exécuté comme une \
+                 commande. Lire plutôt la liste dans le fichier %PATRONUS_FICHIERS_LISTE% (for /f \
+                 \"usebackq delims=\" %f in (\"%PATRONUS_FICHIERS_LISTE%\") do …), ou passer à PowerShell \
+                 ($env:PATRONUS_FICHIERS)."
+                    .into(),
+            );
+        }
         out
     }
 
@@ -774,6 +786,22 @@ mod tests {
         let web = claude_task(&["Read", "WebFetch(domain:contoso.com)"], true, true).warnings();
         assert!(web.len() == 1 && web[0].starts_with("WebFetch"), "{web:?}");
         assert_eq!(tool_name(" Bash(git log *) "), "Bash");
+    }
+
+    /// cmd interprète `&`, `|`, `>` dans la valeur d'une variable développée : un nom de fichier piégé y deviendrait
+    /// une commande. Mise en garde pour cmd seulement.
+    #[test]
+    fn the_file_list_variable_in_cmd_is_a_warning() {
+        let script = |shell, commande: &str| {
+            let mut t = Task::new_script("x");
+            let s = t.action.script.as_mut().unwrap();
+            (s.shell, s.commande) = (shell, commande.into());
+            t
+        };
+        let w = script(Shell::Cmd, "echo %Patronus_Fichiers% >> log.txt").warnings();
+        assert!(w.len() == 1 && w[0].contains("PATRONUS_FICHIERS_LISTE"), "{w:?}");
+        assert!(script(Shell::Cmd, "type \"%PATRONUS_FICHIERS_LISTE%\"").warnings().is_empty());
+        assert!(script(Shell::Powershell, "$env:PATRONUS_FICHIERS").warnings().is_empty());
     }
 
     #[test]
