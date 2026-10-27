@@ -26,7 +26,7 @@ pub fn dot(ui: &mut egui::Ui, color: Color32, radius: f32) {
 }
 
 pub fn open_path(path: &Path) {
-    let _ = std::process::Command::new("explorer.exe").arg(path).spawn();
+    let _ = std::process::Command::new(patronus_core::fsutil::windows_program("explorer.exe")).arg(path).spawn();
 }
 
 /// Ouvre une adresse `http://` ou `https://` dans le navigateur par défaut ; rien d'autre (un lien

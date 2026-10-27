@@ -264,7 +264,7 @@ fn kill_tree(child: &mut std::process::Child, job: Option<&Job>) {
             #[cfg(windows)]
             {
                 use std::os::windows::process::CommandExt;
-                let _ = Command::new("taskkill")
+                let _ = Command::new(crate::fsutil::windows_program(r"System32\taskkill.exe"))
                     .args(["/T", "/F", "/PID", &child.id().to_string()])
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
@@ -357,14 +357,14 @@ fn bash_exe() -> PathBuf {
 pub fn shell_command(script: &Script) -> Command {
     match script.shell {
         Shell::Powershell => {
-            let mut c = Command::new("powershell.exe");
+            let mut c = Command::new(crate::fsutil::windows_program(r"System32\WindowsPowerShell\v1.0\powershell.exe"));
             c.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"]);
             // Sortie en UTF-8, pour un journal lisible.
             c.arg(format!("[Console]::OutputEncoding=[Text.Encoding]::UTF8; {}", script.commande));
             c
         }
         Shell::Cmd => {
-            let mut c = Command::new("cmd.exe");
+            let mut c = Command::new(crate::fsutil::windows_program(r"System32\cmd.exe"));
             #[cfg(windows)]
             {
                 use std::os::windows::process::CommandExt;

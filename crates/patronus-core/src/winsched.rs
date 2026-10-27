@@ -156,7 +156,7 @@ pub fn task_xml(id: &str, task: &Task, exe: &Path, data_dir: &Path, from: NaiveD
 }
 
 fn schtasks(args: &[&str]) -> Result<String, String> {
-    let mut cmd = Command::new("schtasks.exe");
+    let mut cmd = Command::new(crate::fsutil::windows_program(r"System32\schtasks.exe"));
     cmd.args(args);
     #[cfg(windows)]
     {
@@ -217,7 +217,7 @@ pub fn remove_folder(folder: &str) -> Result<(), String> {
         "$s = New-Object -ComObject Schedule.Service; $s.Connect(); \
          $f = $s.GetFolder('\\'); try {{ $f.DeleteFolder('{folder}', 0) }} catch {{ exit 1 }}"
     );
-    let mut cmd = Command::new("powershell.exe");
+    let mut cmd = Command::new(crate::fsutil::windows_program(r"System32\WindowsPowerShell\v1.0\powershell.exe"));
     cmd.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &script]);
     #[cfg(windows)]
     {
